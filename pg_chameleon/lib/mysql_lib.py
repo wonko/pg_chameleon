@@ -4,6 +4,7 @@ import io
 import pymysql
 import codecs
 import binascii
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pymysqlreplication import BinLogStreamReader
 from pymysqlreplication.event import QueryEvent, GtidEvent, HeartbeatLogEvent
 from pymysqlreplication.row_event import DeleteRowsEvent,UpdateRowsEvent,WriteRowsEvent
@@ -24,10 +25,12 @@ class mysql_source(object):
         self.schema_list = []
         self.hexify_always = ['blob', 'tinyblob', 'mediumblob','longblob','binary','varbinary']
         self.spatial_datatypes = ['point','geometry','linestring','polygon', 'multipoint', 'multilinestring', 'geometrycollection']
+        self.text_datatypes = ['char', 'varchar', 'tinytext', 'text', 'mediumtext', 'longtext', 'enum', 'set', 'json']
         self.schema_only = {}
         self.gtid_mode = False
         self.gtid_enable = False
         self.copy_table_data = True
+        self.copy_parallel_workers = 1
 
 
 
@@ -179,6 +182,20 @@ class mysql_source(object):
             self.conn_unbuffered.close()
         except:
             pass
+
+    def __strip_nul(self, value):
+        """
+            The method strips NUL bytes from text values coming from MySQL.
+            PostgreSQL text/varchar/json values cannot store NUL bytes.
+        """
+        if isinstance(value, str):
+            return value.replace("\x00", "")
+        elif isinstance(value, dict):
+            return {key: self.__strip_nul(dic_value) for key, dic_value in value.items()}
+        elif isinstance(value, list):
+            return [self.__strip_nul(list_value) for list_value in value]
+        else:
+            return value
 
     def __build_skip_events(self):
         """
@@ -475,9 +492,8 @@ class mysql_source(object):
                         data_type IN ('"""+"','".join(self.spatial_datatypes)+"""')
                     THEN
                         concat('ST_AsText(',column_name,')')
-
                 ELSE
-                    concat('cast(`',column_name,'` AS char CHARACTER SET """+ self.charset +""")')
+                    concat('cast(replace(`',column_name,'`, char(0), '''') AS char CHARACTER SET """+ self.charset +""")')
                 END
                 AS select_csv,
                 CASE
@@ -497,9 +513,8 @@ class mysql_source(object):
                         data_type IN ('"""+"','".join(self.spatial_datatypes)+"""')
                     THEN
                         concat('ST_AsText(',column_name,') AS','`',column_name,'`')
-
                 ELSE
-                    concat('cast(`',column_name,'` AS char CHARACTER SET """+ self.charset +""") AS','`',column_name,'`')
+                    concat('cast(replace(`',column_name,'`, char(0), '''') AS char CHARACTER SET """+ self.charset +""") AS','`',column_name,'`')
 
                 END
                 AS select_stat,
@@ -802,6 +817,125 @@ class mysql_source(object):
         self.disconnect_db_buffered()
         return table_pkey
 
+    def __init_copy_worker(self):
+        """
+            The method creates a worker with independent database connections for
+            copying a single table in parallel with other tables.
+        """
+        worker = mysql_source()
+        worker.source = self.source
+        worker.tables = self.tables
+        worker.schema = self.schema
+        worker.logger = self.logger
+        worker.sources = self.sources
+        worker.source_config = self.source_config
+        worker.type_override = self.type_override
+        worker.notifier = self.notifier
+        worker.out_dir = self.out_dir
+        worker.copy_mode = self.copy_mode
+        worker.copy_max_memory = self.copy_max_memory
+        worker.copy_table_data = self.copy_table_data
+        worker.schema_loading = self.schema_loading
+        worker.schema_tables = self.schema_tables
+        worker.schema_mappings = self.schema_mappings
+        worker.keep_existing_schema = self.keep_existing_schema
+        worker.postgis_present = self.postgis_present
+        worker.hexify = self.hexify
+        worker.charset = self.charset
+        worker.net_read_timeout = self.net_read_timeout
+
+        worker.pg_engine = self.pg_engine.__class__()
+        worker.pg_engine.dest_conn = self.pg_engine.dest_conn
+        worker.pg_engine.logger = self.logger
+        worker.pg_engine.source = self.source
+        worker.pg_engine.type_override = self.pg_engine.type_override
+        worker.pg_engine.sources = self.pg_engine.sources
+        worker.pg_engine.notifier = self.pg_engine.notifier
+        worker.pg_engine.fillfactor = self.pg_engine.fillfactor
+        worker.pg_engine.lock_timeout = self.pg_engine.lock_timeout
+        worker.pg_engine.grant_select_to = self.pg_engine.grant_select_to
+        worker.pg_engine.schema_loading = self.pg_engine.schema_loading
+        worker.pg_engine.schema_tables = self.pg_engine.schema_tables
+        worker.pg_engine.keep_existing_schema = self.pg_engine.keep_existing_schema
+        worker.pg_engine.connect_db()
+        worker.pg_engine.set_source_id()
+        return worker
+
+    def __copy_single_table(self, schema, table):
+        """
+            The method copies one table and stores its replica metadata.
+        """
+        loading_schema = self.schema_loading[schema]["loading"]
+        destination_schema = self.schema_loading[schema]["destination"]
+        self.logger.info("Copying the source table %s into %s.%s" %(table, loading_schema, table) )
+        try:
+            if self.keep_existing_schema:
+                table_pkey = self.pg_engine.get_existing_pkey(destination_schema,table)
+                self.logger.info("Collecting constraints and indices from the destination table  %s.%s" %(destination_schema, table) )
+                self.pg_engine.collect_idx_cons(destination_schema,table)
+                self.logger.info("Removing constraints and indices from the destination table  %s.%s" %(destination_schema, table) )
+                self.pg_engine.cleanup_idx_cons(destination_schema,table)
+                self.logger.info("Truncating the table  %s.%s" %(destination_schema, table) )
+                self.pg_engine.truncate_table(destination_schema,table)
+                master_status = self.copy_data(schema, table)
+            else:
+                if self.copy_table_data:
+                    master_status = self.copy_data(schema, table)
+                else:
+                    self.connect_db_buffered()
+                    master_status = self.get_master_coordinates()
+                    self.disconnect_db_buffered()
+
+                table_pkey = self.__create_indices(schema, table)
+            self.pg_engine.store_table(destination_schema, table, table_pkey, master_status)
+            if self.keep_existing_schema:
+                #input("Press Enter to continue...")
+                self.logger.info("Adding constraint and indices to the destination table  %s.%s" %(destination_schema, table) )
+                self.pg_engine.create_idx_cons(destination_schema,table)
+        except:
+            self.logger.info("Could not copy the table %s. Excluding it from the replica." %(table) )
+            raise
+
+    def __copy_single_table_worker(self, schema, table):
+        """
+            The method copies one table using a dedicated worker object.
+        """
+        worker = self.__init_copy_worker()
+        try:
+            worker.__copy_single_table(schema, table)
+        finally:
+            worker.disconnect_db_buffered()
+            worker.disconnect_db_unbuffered()
+            worker.pg_engine.disconnect_db()
+
+    def __get_copy_table_jobs(self):
+        """
+            The method returns the list of tables to copy.
+        """
+        copy_jobs = []
+        for schema in self.schema_tables:
+            for table in self.schema_tables[schema]:
+                copy_jobs.append((schema, table))
+        return copy_jobs
+
+    def __copy_tables_parallel(self):
+        """
+            The method copies tables in parallel using one worker per active thread.
+        """
+        copy_jobs = self.__get_copy_table_jobs()
+        self.logger.info("Copying %s tables using %s parallel workers." % (len(copy_jobs), self.copy_parallel_workers))
+        with ThreadPoolExecutor(max_workers=self.copy_parallel_workers) as executor:
+            future_jobs = {
+                executor.submit(self.__copy_single_table_worker, schema, table): (schema, table)
+                for schema, table in copy_jobs
+            }
+            for future in as_completed(future_jobs):
+                schema, table = future_jobs[future]
+                try:
+                    future.result()
+                except:
+                    self.logger.error("Parallel copy failed for table %s.%s" % (schema, table))
+                    raise
 
     def __copy_tables(self):
         """
@@ -812,37 +946,11 @@ class mysql_source(object):
         """
 
 
-        for schema in self.schema_tables:
-            loading_schema = self.schema_loading[schema]["loading"]
-            destination_schema = self.schema_loading[schema]["destination"]
-            table_list = self.schema_tables[schema]
-            for table in table_list:
-                self.logger.info("Copying the source table %s into %s.%s" %(table, loading_schema, table) )
-                try:
-                    if self.keep_existing_schema:
-                        table_pkey = self.pg_engine.get_existing_pkey(destination_schema,table)
-                        self.logger.info("Collecting constraints and indices from the destination table  %s.%s" %(destination_schema, table) )
-                        self.pg_engine.collect_idx_cons(destination_schema,table)
-                        self.logger.info("Removing constraints and indices from the destination table  %s.%s" %(destination_schema, table) )
-                        self.pg_engine.cleanup_idx_cons(destination_schema,table)
-                        self.logger.info("Truncating the table  %s.%s" %(destination_schema, table) )
-                        self.pg_engine.truncate_table(destination_schema,table)
-                        master_status = self.copy_data(schema, table)
-                    else:
-                        if self.copy_table_data:
-                            master_status = self.copy_data(schema, table)
-                        else:
-                            master_status = self.get_master_coordinates()
-
-                        table_pkey = self.__create_indices(schema, table)
-                    self.pg_engine.store_table(destination_schema, table, table_pkey, master_status)
-                    if self.keep_existing_schema:
-                        #input("Press Enter to continue...")
-                        self.logger.info("Adding constraint and indices to the destination table  %s.%s" %(destination_schema, table) )
-                        self.pg_engine.create_idx_cons(destination_schema,table)
-                except:
-                    self.logger.info("Could not copy the table %s. Excluding it from the replica." %(table) )
-                    raise
+        if self.copy_parallel_workers > 1:
+            self.__copy_tables_parallel()
+        else:
+            for schema, table in self.__get_copy_table_jobs():
+                self.__copy_single_table(schema, table)
 
     def set_copy_max_memory(self):
         """
@@ -923,6 +1031,9 @@ class mysql_source(object):
             sys.exit()
         self.out_dir = self.source_config["out_dir"]
         self.copy_mode = self.source_config["copy_mode"]
+        self.copy_parallel_workers = int(self.source_config.get("copy_parallel_workers", 1))
+        if self.copy_parallel_workers < 1:
+            self.copy_parallel_workers = 1
         self.pg_engine.lock_timeout = self.source_config["lock_timeout"]
         self.pg_engine.grant_select_to = self.source_config["grant_select_to"]
 
@@ -1448,9 +1559,11 @@ class mysql_source(object):
                                 elif column_type in self.hexify and isinstance(event_after[column_name], bytes):
                                     event_after[column_name] = ''
                                 elif column_type == 'json':
-                                    event_after[column_name] = self.__decode_dic_keys(event_after[column_name])
+                                    event_after[column_name] = self.__strip_nul(self.__decode_dic_keys(event_after[column_name]))
                                 elif column_type in self.spatial_datatypes and event_after[column_name]:
                                     event_after[column_name] = self.__get_text_spatial(event_after[column_name])
+                                elif column_type in self.text_datatypes:
+                                    event_after[column_name] = self.__strip_nul(event_after[column_name])
 
 
                             for column_name in event_before:
@@ -1464,9 +1577,11 @@ class mysql_source(object):
                                 elif column_type in self.hexify and isinstance(event_before[column_name], bytes):
                                     event_before[column_name] = ''
                                 elif column_type == 'json':
-                                    event_before[column_name] = self.__decode_dic_keys(event_after[column_name])
+                                    event_before[column_name] = self.__strip_nul(self.__decode_dic_keys(event_before[column_name]))
                                 elif column_type in self.spatial_datatypes and event_after[column_name]:
                                     event_before[column_name] = self.__get_text_spatial(event_before[column_name])
+                                elif column_type in self.text_datatypes:
+                                    event_before[column_name] = self.__strip_nul(event_before[column_name])
                             event_insert={"global_data":global_data,"event_after":event_after,  "event_before":event_before}
                             size_insert += len(str(event_insert))
                             group_insert.append(event_insert)

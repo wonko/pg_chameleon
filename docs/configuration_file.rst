@@ -137,6 +137,7 @@ Source configuration parameters
 * replica_batch_size the max number of rows that are pulled from the mysql replica before a write on the postgresql database is performed. See caveats in README for a complete explanation.
 * batch_retention the max retention for the replayed batches rows in t_replica_batch. The field accepts any valid interval accepted by PostgreSQL
 * copy_max_memory the max amount of memory to use when copying the table in PostgreSQL. Is possible to specify the value in (k)ilobytes, (M)egabytes, (G)igabytes adding the suffix (e.g. 300M).
+* copy_parallel_workers the number of tables to copy in parallel during init_replica, refresh_schema and sync_tables. The default value is ``1`` which preserves the sequential copy behaviour.
 * copy_mode the allowed values are ‘file’ and ‘direct’. With direct the copy happens on the fly. With file the table is first dumped in a csv file then reloaded in PostgreSQL.
 * out_dir the directory where the csv files are dumped during the init_replica process if the copy mode is file.
 * sleep_loop seconds between a two replica batches.

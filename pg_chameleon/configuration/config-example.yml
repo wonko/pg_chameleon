@@ -50,6 +50,7 @@ sources:
     replay_max_rows: 10000
     batch_retention: '1 day'
     copy_max_memory: "300M"
+    copy_parallel_workers: 1
     copy_mode: 'file'
     out_dir: /tmp
     sleep_loop: 1

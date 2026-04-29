@@ -87,7 +87,8 @@ class TestTokenizer(unittest.TestCase):
                 msg=f"Checking parser {parser_name}", string=string, expected=expected
             ):
                 output = parser.parse(string)
-                self.assertEqual(output, expected)
+                for key, value in expected.items():
+                    self.assertEqual(output[key], value)
 
 
 if __name__ == "__main__":

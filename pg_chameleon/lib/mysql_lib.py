@@ -1488,6 +1488,7 @@ class mysql_source(object):
             log_pos = log_position,
             auto_position = gtid_set,
             resume_stream = True,
+            blocking = True,
             only_schemas = self.schema_replica,
             slave_heartbeat = self.sleep_loop,
 

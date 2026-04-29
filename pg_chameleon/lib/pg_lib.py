@@ -3343,7 +3343,6 @@ class pg_engine(object):
                     WHERE
                             i_id_source=%s
                         AND	b_started
-                        AND	b_processed
 
                 ) bat,
                 hwm
@@ -3537,6 +3536,35 @@ class pg_engine(object):
                     self.logger.error(self.pgsql_cur.mogrify(sql_master, (self.i_id_source, binlog_name, binlog_position, executed_gtid_set, log_table)))
 
         return next_batch_id
+
+    def update_batch_coordinates(self, id_batch, master_status):
+        """
+            This method updates the coordinates for an open batch without marking
+            the batch as processed. This is used when the read stream reaches a
+            newer source position without collecting events for replicated tables.
+
+            :param id_batch: the id batch to update
+            :param master_status: the master data with the binlogfile and the log position
+        """
+        master_data = master_status[0]
+        binlog_name = master_data["File"]
+        binlog_position = master_data["Position"]
+        if "Executed_Gtid_Set" in master_data:
+            executed_gtid_set = master_data["Executed_Gtid_Set"]
+        else:
+            executed_gtid_set = None
+        sql_master = """
+            UPDATE sch_chameleon.t_replica_batch
+                SET
+                    t_binlog_name=%s,
+                    i_binlog_position=%s,
+                    t_gtid_set=%s
+            WHERE
+                i_id_batch=%s
+            ;
+        """
+        self.pgsql_cur.execute(sql_master, (binlog_name, binlog_position, executed_gtid_set, id_batch))
+        self.logger.debug("Updated open batch %s coordinates to %s:%s" % (id_batch, binlog_name, binlog_position))
 
     def reindex_table(self, schema, table):
         """

@@ -5,6 +5,7 @@ import pymysql
 import codecs
 import binascii
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from threading import Lock
 from pymysqlreplication import BinLogStreamReader
 from pymysqlreplication.event import QueryEvent, GtidEvent, HeartbeatLogEvent
 from pymysqlreplication.row_event import DeleteRowsEvent,UpdateRowsEvent,WriteRowsEvent
@@ -31,6 +32,26 @@ class mysql_source(object):
         self.gtid_enable = False
         self.copy_table_data = True
         self.copy_parallel_workers = 1
+        self.copy_exact_rowcount = False
+        self.copy_table_total = 0
+        self.copy_table_finished = 0
+        self.copy_table_working = 0
+        self.copy_table_lock = Lock()
+
+    def __format_seconds(self, seconds):
+        """
+            The method formats a duration in seconds using a compact HH:MM:SS form.
+        """
+        seconds = int(seconds)
+        hours = seconds//3600
+        minutes = (seconds%3600)//60
+        seconds = seconds%60
+        if hours > 0:
+            return "%sh %sm %ss" % (hours, minutes, seconds)
+        elif minutes > 0:
+            return "%sm %ss" % (minutes, seconds)
+        else:
+            return "%ss" % seconds
 
 
 
@@ -640,15 +661,22 @@ class mysql_source(object):
         sql_rows = sql_rows.format(self.copy_max_memory)
         self.cursor_buffered.execute(sql_rows, (schema, table))
         count_rows = self.cursor_buffered.fetchone()
-        total_rows = count_rows["table_rows"]
+        total_rows = int(count_rows["table_rows"])
         copy_limit = int(count_rows["copy_limit"])
         table_txs = count_rows["transactions"] == "YES"
+        if self.copy_exact_rowcount:
+            sql_count = "SELECT COUNT(*) as table_rows FROM `%s`.`%s`;" % (schema, table)
+            self.logger.debug("Counting rows in %s.%s using COUNT(*)" % (schema, table))
+            self.cursor_buffered.execute(sql_count)
+            total_rows = int(self.cursor_buffered.fetchone()["table_rows"])
         if copy_limit == 0:
             copy_limit = 1000000
-        num_slices = int(total_rows//copy_limit)
-        range_slices = list(range(num_slices+1))
-        total_slices = len(range_slices)
-        slice = range_slices[0]
+        total_slices = int((total_rows + copy_limit - 1)//copy_limit)
+        if total_slices == 0:
+            total_slices = 1
+        slice = 0
+        rows_copied = 0
+        copy_started = time.time()
         self.logger.debug("The table %s.%s will be copied in %s  estimated slice(s) of %s rows, using a transaction %s"  % (schema, table, total_slices, copy_limit, table_txs))
         out_file = '%s/%s_%s.csv' % (self.out_dir, schema, table )
         self.lock_table(schema, table)
@@ -669,6 +697,7 @@ class mysql_source(object):
             csv_results = self.cursor_unbuffered.fetchmany(copy_limit)
             if len(csv_results) == 0:
                 break
+            rows_in_slice = len(csv_results)
             csv_data="\n".join(d[0] for d in csv_results )
 
             if self.copy_mode == 'direct':
@@ -687,7 +716,9 @@ class mysql_source(object):
                 self.logger.info("Table %s.%s error in PostgreSQL copy, saving slice number for the fallback to insert statements " %  (loading_schema, table ))
                 slice_insert.append(slice)
 
-            self.print_progress(slice+1,total_slices, schema, table)
+            rows_copied += rows_in_slice
+            elapsed = time.time() - copy_started
+            self.print_progress(slice+1,total_slices, schema, table, rows_copied, total_rows, elapsed)
             slice+=1
 
             csv_file.close()
@@ -745,7 +776,7 @@ class mysql_source(object):
             num_insert +=1
 
 
-    def print_progress (self, iteration, total, schema, table):
+    def print_progress (self, iteration, total, schema, table, rows_copied=None, total_rows=None, elapsed=None):
         """
             Print the copy progress in slices and estimated total slices.
             In order to reduce noise when the log level is info only the tables copied in multiple slices
@@ -755,12 +786,21 @@ class mysql_source(object):
             :param total: The estimated total slices
             :param table_name: The table name
         """
-        if iteration>=total:
-            total = iteration
-        if total>1:
-            self.logger.info("Table %s.%s copied %s slice of %s" % (schema, table, iteration, total))
+        progress_metrics = ""
+        if rows_copied is not None and elapsed and elapsed > 0:
+            rows_per_second = rows_copied/elapsed
+            progress_metrics = ", %s rows/s" % int(rows_per_second)
+            if total_rows is not None and total_rows > rows_copied and rows_per_second > 0:
+                remaining_seconds = (total_rows - rows_copied)/rows_per_second
+                progress_metrics += ", ETA %s" % self.__format_seconds(remaining_seconds)
+            elif total_rows is not None and rows_copied >= total_rows:
+                progress_metrics += ", ETA 0s"
+        if total>1 and iteration<=total:
+            self.logger.info("Table %s.%s copied %s slice of %s%s" % (schema, table, iteration, total, progress_metrics))
+        elif total>1:
+            self.logger.info("Table %s.%s copied %s slice. Estimated total slices was %s%s" % (schema, table, iteration, total, progress_metrics))
         else:
-            self.logger.debug("Table %s.%s copied %s slice of %s" % (schema, table, iteration, total))
+            self.logger.debug("Table %s.%s copied %s slice of %s%s" % (schema, table, iteration, total, progress_metrics))
 
     def __create_indices(self, schema, table):
         """
@@ -817,6 +857,49 @@ class mysql_source(object):
         self.disconnect_db_buffered()
         return table_pkey
 
+    def __init_copy_progress(self, copy_jobs):
+        """
+            The method initialises the global copy progress counters.
+        """
+        self.copy_table_total = len(copy_jobs)
+        self.copy_table_finished = 0
+        self.copy_table_working = 0
+        self.copy_table_lock = Lock()
+
+    def __log_copy_table_start(self, schema, table):
+        """
+            The method logs the global table copy progress when a table starts.
+        """
+        with self.copy_table_lock:
+            self.copy_table_working += 1
+            remaining = self.copy_table_total - self.copy_table_finished - self.copy_table_working
+            self.logger.info(
+                "Starting copy for %s.%s. Need to copy %s tables, finished %s, working on %s, remaining %s"
+                % (
+                    schema,
+                    table,
+                    self.copy_table_total,
+                    self.copy_table_finished,
+                    self.copy_table_working,
+                    remaining,
+                )
+            )
+
+    def __log_copy_table_finish(self):
+        """
+            The method updates the global table copy progress when a table finishes.
+        """
+        with self.copy_table_lock:
+            self.copy_table_working -= 1
+            self.copy_table_finished += 1
+
+    def __log_copy_table_abort(self):
+        """
+            The method updates the global table copy progress when a table copy fails.
+        """
+        with self.copy_table_lock:
+            self.copy_table_working -= 1
+
     def __init_copy_worker(self):
         """
             The method creates a worker with independent database connections for
@@ -836,6 +919,7 @@ class mysql_source(object):
         worker.copy_max_memory = self.copy_max_memory
         worker.copy_table_data = self.copy_table_data
         worker.schema_loading = self.schema_loading
+        worker.copy_exact_rowcount = self.copy_exact_rowcount
         worker.schema_tables = self.schema_tables
         worker.schema_mappings = self.schema_mappings
         worker.keep_existing_schema = self.keep_existing_schema
@@ -900,9 +984,14 @@ class mysql_source(object):
         """
             The method copies one table using a dedicated worker object.
         """
+        self.__log_copy_table_start(schema, table)
         worker = self.__init_copy_worker()
         try:
             worker.__copy_single_table(schema, table)
+            self.__log_copy_table_finish()
+        except:
+            self.__log_copy_table_abort()
+            raise
         finally:
             worker.disconnect_db_buffered()
             worker.disconnect_db_unbuffered()
@@ -923,6 +1012,7 @@ class mysql_source(object):
             The method copies tables in parallel using one worker per active thread.
         """
         copy_jobs = self.__get_copy_table_jobs()
+        self.__init_copy_progress(copy_jobs)
         self.logger.info("Copying %s tables using %s parallel workers." % (len(copy_jobs), self.copy_parallel_workers))
         with ThreadPoolExecutor(max_workers=self.copy_parallel_workers) as executor:
             future_jobs = {
@@ -949,8 +1039,16 @@ class mysql_source(object):
         if self.copy_parallel_workers > 1:
             self.__copy_tables_parallel()
         else:
-            for schema, table in self.__get_copy_table_jobs():
-                self.__copy_single_table(schema, table)
+            copy_jobs = self.__get_copy_table_jobs()
+            self.__init_copy_progress(copy_jobs)
+            for schema, table in copy_jobs:
+                self.__log_copy_table_start(schema, table)
+                try:
+                    self.__copy_single_table(schema, table)
+                    self.__log_copy_table_finish()
+                except:
+                    self.__log_copy_table_abort()
+                    raise
 
     def set_copy_max_memory(self):
         """
@@ -1034,6 +1132,7 @@ class mysql_source(object):
         self.copy_parallel_workers = int(self.source_config.get("copy_parallel_workers", 1))
         if self.copy_parallel_workers < 1:
             self.copy_parallel_workers = 1
+        self.copy_exact_rowcount = self.source_config.get("copy_exact_rowcount", False)
         self.pg_engine.lock_timeout = self.source_config["lock_timeout"]
         self.pg_engine.grant_select_to = self.source_config["grant_select_to"]
 
@@ -1659,6 +1758,9 @@ class mysql_source(object):
                             self.logger.debug("updating processed flag for id_batch %s", (id_batch))
                             self.pg_engine.set_batch_processed(id_batch)
                             self.id_batch=None
+                    elif master_data:
+                        master_status = self.get_master_coordinates()
+                        self.pg_engine.update_batch_coordinates(id_batch, master_status)
                 self.pg_engine.keep_existing_schema = self.keep_existing_schema
                 self.pg_engine.check_source_consistent()
 

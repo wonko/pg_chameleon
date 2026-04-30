@@ -37,6 +37,7 @@ class mysql_source(object):
         self.copy_table_finished = 0
         self.copy_table_working = 0
         self.copy_table_lock = Lock()
+        self.generated_column_cache = {}
 
     def __format_seconds(self, seconds):
         """
@@ -52,6 +53,36 @@ class mysql_source(object):
             return "%sm %ss" % (minutes, seconds)
         else:
             return "%ss" % seconds
+
+
+    def __get_target_generated_columns(self, schema, table):
+        """
+            The method returns the generated columns in the mapped PostgreSQL target table.
+        """
+        if not self.keep_existing_schema:
+            return set()
+
+        loading_schema = None
+        if schema in self.schema_loading:
+            loading_schema = self.schema_loading[schema]["loading"]
+        elif schema in self.schema_mappings:
+            loading_schema = self.schema_mappings[schema]
+
+        if not loading_schema:
+            return set()
+
+        cache_key = "%s.%s" % (loading_schema, table)
+        if cache_key not in self.generated_column_cache:
+            self.pg_engine.connect_db()
+            generated_columns = set(self.pg_engine.get_generated_columns(loading_schema, table))
+            self.generated_column_cache[cache_key] = generated_columns
+            if generated_columns:
+                self.logger.info(
+                    "Ignoring generated target columns for %s.%s: %s"
+                    % (loading_schema, table, ', '.join(sorted(generated_columns)))
+                )
+
+        return self.generated_column_cache[cache_key]
 
 
 
@@ -551,6 +582,9 @@ class mysql_source(object):
         """
         self.cursor_buffered.execute(sql_select, (schema, table))
         select_data = self.cursor_buffered.fetchall()
+        generated_columns = self.__get_target_generated_columns(schema, table)
+        if generated_columns:
+            select_data = [statement for statement in select_data if statement["column_name"] not in generated_columns]
         select_csv = ["COALESCE(REPLACE(%s, '\"', '\"\"'),'NULL') " % statement["select_csv"] for statement in select_data]
         select_stat = [statement["select_csv"] for statement in select_data]
         column_list = ['"%s"' % statement["column_name"] for statement in select_data]
@@ -1090,6 +1124,10 @@ class mysql_source(object):
         self.skip_tables = self.source_config["skip_tables"]
         self.replica_batch_size = self.source_config["replica_batch_size"]
         self.sleep_loop = self.source_config["sleep_loop"]
+        if "keep_existing_schema" in self.sources[self.source]:
+            self.keep_existing_schema = self.sources[self.source]["keep_existing_schema"]
+        else:
+            self.keep_existing_schema = False
         self.postgis_present = self.pg_engine.check_postgis()
         if self.postgis_present:
             self.hexify = self.hexify_always
@@ -1318,6 +1356,7 @@ class mysql_source(object):
                 table_dict = {}
                 table_dict["table_charset"] = table_charset
                 table_dict["column_type"] = column_type
+                table_dict["generated_columns"] = self.__get_target_generated_columns(table["table_schema"], table["table_name"])
                 table_map[table["table_name"]] = table_dict
             table_type_map[schema] = table_map
             table_map = {}
@@ -1626,6 +1665,7 @@ class mysql_source(object):
                                 add_row = False
                         column_map = table_type_map[schema_row][table_name]["column_type"]
                         table_charset = table_type_map[schema_row][table_name]["table_charset"]
+                        generated_columns = table_type_map[schema_row][table_name]["generated_columns"]
 
                         global_data={
                                             "binlog":log_file,
@@ -1647,6 +1687,10 @@ class mysql_source(object):
                             elif skip_event[1] == "insert":
                                 global_data["action"] = "insert"
                                 event_after=row["values"]
+
+                            for column_name in generated_columns:
+                                event_after.pop(column_name, None)
+                                event_before.pop(column_name, None)
 
                             for column_name in event_after:
                                 try:

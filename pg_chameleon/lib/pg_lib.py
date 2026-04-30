@@ -863,6 +863,38 @@ class pg_engine(object):
         return inc_dic
 
 
+    def get_generated_columns(self, schema, table):
+        """
+            The method collects the generated columns for a target table.
+
+            :param schema: the schema name where the table belongs
+            :param table: the table name
+            :return: list of generated column names
+            :rtype: list
+        """
+        sql_get = """
+            SELECT
+                a.attname
+            FROM
+                pg_catalog.pg_attribute a
+                INNER JOIN pg_catalog.pg_class c
+                    ON c.oid = a.attrelid
+                INNER JOIN pg_catalog.pg_namespace n
+                    ON n.oid = c.relnamespace
+            WHERE
+                    n.nspname = %s
+                AND c.relname = %s
+                AND a.attnum > 0
+                AND NOT a.attisdropped
+                AND a.attgenerated <> ''
+            ORDER BY
+                a.attnum
+        ;"""
+        self.pgsql_cur.execute(sql_get, (schema, table))
+        generated_columns = self.pgsql_cur.fetchall()
+        return [column[0] for column in generated_columns]
+
+
     def grant_select(self):
         """
             The method grants the select permissions on all the tables on the replicated schemas to the database roles

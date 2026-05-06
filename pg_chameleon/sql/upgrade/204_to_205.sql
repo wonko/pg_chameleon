@@ -219,6 +219,13 @@ $BODY$
 		LOOP
 			
 			BEGIN
+				IF coalesce(current_setting('pg_chameleon.log_replay_statements', true),'off') = 'on'
+
+				THEN
+
+				    RAISE INFO 'REPLAY SQL: %', v_r_statements.t_sql;
+
+				END IF;
 				EXECUTE v_r_statements.t_sql;
 				v_i_ddl:=v_i_ddl+v_r_statements.i_ddl;
 				v_i_replayed:=v_i_replayed+v_r_statements.i_replay;

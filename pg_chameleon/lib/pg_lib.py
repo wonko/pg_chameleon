@@ -592,6 +592,8 @@ class pg_engine(object):
         self.idx_sequence = 0
         self.lock_timeout = 0
         self.keep_existing_schema=False
+        self.log_replay_statements=False
+        self.log_replay_statements_checked=False
         self.migrations = [
             {'version': '2.0.1',  'script': '200_to_201.sql'},
             {'version': '2.0.2',  'script': '201_to_202.sql'},
@@ -1250,8 +1252,23 @@ class pg_engine(object):
             replay_max_rows = self.source_config["replay_max_rows"]
             exit_on_error = True if self.source_config["on_error_replay"]=='exit' else False
             while continue_loop:
+                if self.log_replay_statements:
+                    if not self.log_replay_statements_checked:
+                        self.pgsql_cur.execute("SELECT pg_get_functiondef('sch_chameleon.fn_replay_mysql(integer,integer,boolean)'::regprocedure) LIKE %s;", ('%REPLAY SQL:%',))
+                        replay_logging_installed = self.pgsql_cur.fetchone()[0]
+                        if not replay_logging_installed:
+                            self.logger.warning("The installed sch_chameleon.fn_replay_mysql function does not include replay SQL logging. Refresh the replica catalogue function to use --log-replay-statements.")
+                        self.log_replay_statements_checked=True
+                    del self.pgsql_conn.notices[:]
+                    self.pgsql_cur.execute("SET pg_chameleon.log_replay_statements = 'on';")
                 sql_replay = """SELECT * FROM sch_chameleon.fn_replay_mysql(%s,%s,%s);""";
                 self.pgsql_cur.execute(sql_replay, (replay_max_rows, self.i_id_source, exit_on_error))
+                if self.log_replay_statements:
+                    for notice in self.pgsql_conn.notices:
+                        notice = notice.strip()
+                        if "REPLAY SQL:" in notice:
+                            self.logger.info(notice)
+                    del self.pgsql_conn.notices[:]
                 replay_status = self.pgsql_cur.fetchone()
                 if replay_status[0]:
                     self.logger.info("Replayed at most %s rows for source %s" % (replay_max_rows, self.source) )

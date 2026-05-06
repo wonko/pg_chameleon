@@ -121,6 +121,7 @@ class replica_engine(object):
         self.pg_engine.sources = self.config["sources"]
         self.pg_engine.notifier = self.notifier
         self.pg_engine.fillfactor = self.config["fillfactor"]
+        self.pg_engine.log_replay_statements = self.args.log_replay_statements
 
 
 

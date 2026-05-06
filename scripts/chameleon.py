@@ -11,6 +11,7 @@ commands = [
     'create_replica_schema',
     'drop_replica_schema',
     'upgrade_replica_schema',
+    'refresh_replay_function',
     'add_source',
     'drop_source',
     'init_replica',

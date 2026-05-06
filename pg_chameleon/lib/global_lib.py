@@ -502,6 +502,17 @@ class replica_engine(object):
                 print('Wrong starting version. Expected %s, got %s' % (catalog_version, self.upgradable_version))
                 sys.exit()
 
+    def refresh_replay_function(self):
+        """
+            The method refreshes the MySQL replay function without changing the
+            replica catalogue version.
+        """
+        print('Stopping all the active sources.')
+        self.__stop_all_active_sources()
+        print('Refreshing sch_chameleon.fn_replay_mysql.')
+        self.pg_engine.refresh_replay_function()
+        print('Replay function refreshed.')
+
 
     def update_schema_mappings(self):
         """

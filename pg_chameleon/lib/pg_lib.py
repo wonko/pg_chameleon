@@ -1684,6 +1684,18 @@ class pg_engine(object):
             print('There are sources in running or syncing state. You shall stop all the replica processes before upgrading the catalogue.')
             sys.exit()
 
+    def refresh_replay_function(self):
+        """
+            The method refreshes the MySQL replay function without modifying the
+            replica catalogue version.
+        """
+        replay_function_file = '%s/209_to_2010.sql' % self.sql_upgrade_dir
+        replay_function = open(replay_function_file, 'rb')
+        replay_function_sql = replay_function.read()
+        replay_function.close()
+        self.connect_db()
+        self.pgsql_cur.execute(replay_function_sql)
+
 
 
     def upgrade_catalogue_v1(self):

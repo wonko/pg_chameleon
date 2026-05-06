@@ -251,7 +251,7 @@ $BODY$
 								p_i_id_source,
 								v_schema_name, 
 								v_table_name, 
-								v_r_statements.t_pk_data as t_table_pkey, 
+								coalesce(v_r_statements.t_pk_data, 'N/A') as t_table_pkey, 
 								t_binlog_name, 
 								i_binlog_position, 
 								clock_timestamp(), 

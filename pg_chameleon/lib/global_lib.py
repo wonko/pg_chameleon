@@ -664,6 +664,40 @@ class replica_engine(object):
             else:
                 self.logger.info("Cleaning not processed batches for source %s" % (self.args.source))
                 self.pg_engine.clean_not_processed_batches()
+                if self.args.reset_binlog_to_current and (self.args.force_from or self.args.binlog_name or self.args.binlog_position):
+                    print("--reset-binlog-to-current cannot be combined with --force-from, --binlog-name, or --binlog-position.")
+                    self.pg_engine.disconnect_db()
+                    return
+                if self.args.force_from:
+                    try:
+                        binlog_name, binlog_position = self.args.force_from.rsplit(':', 1)
+                        binlog_position = int(binlog_position)
+                    except ValueError:
+                        print("Invalid --force-from value. Expected format: binlog.000732:317")
+                        self.pg_engine.disconnect_db()
+                        return
+                else:
+                    binlog_name = self.args.binlog_name
+                    binlog_position = self.args.binlog_position
+                if self.args.reset_binlog_to_current or binlog_name or binlog_position:
+                    if not binlog_name or binlog_position is None:
+                        if not self.args.reset_binlog_to_current:
+                            print("Both --binlog-name and --binlog-position are required when advancing the replica start position, or use --force-from=binlog.000732:317.")
+                            self.pg_engine.disconnect_db()
+                            return
+                    self.mysql_source.source_config = self.config["sources"][self.args.source]
+                    self.mysql_source.connect_db_buffered()
+                    master_status = self.mysql_source.get_master_coordinates()
+                    self.mysql_source.disconnect_db_buffered()
+                    if self.args.reset_binlog_to_current:
+                        binlog_name = master_status[0]["File"]
+                        binlog_position = master_status[0]["Position"]
+                    else:
+                        master_status[0]["File"] = binlog_name
+                        master_status[0]["Position"] = binlog_position
+                    self.logger.warning("Advancing replica start position for source %s to %s:%s. Unreplayed batches will be discarded." % (self.args.source, binlog_name, binlog_position))
+                    self.pg_engine.clean_unreplayed_batches()
+                    self.pg_engine.ensure_open_batch(master_status)
                 self.pg_engine.disconnect_db()
                 if self.args.debug:
                     self.__run_replica()

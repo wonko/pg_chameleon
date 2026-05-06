@@ -3304,6 +3304,24 @@ class pg_engine(object):
             self.pgsql_cur.execute(sql_cleanup, (self.i_id_source, ))
 
 
+    def clean_unreplayed_batches(self):
+        """
+            The method deletes the unreplayed batches for the given source.
+            The related log rows and batch event rows are removed by foreign
+            key cascade from the replica catalogue.
+        """
+        self.set_source_id()
+        sql_cleanup = """
+            DELETE FROM sch_chameleon.t_replica_batch
+            WHERE
+                    i_id_source=%s
+                AND NOT b_replayed
+            ;
+        """
+        self.pgsql_cur.execute(sql_cleanup, (self.i_id_source, ))
+        self.logger.warning("Deleted %s unreplayed batches for source %s" % (self.pgsql_cur.rowcount, self.source))
+
+
     def check_auto_maintenance(self):
         """
             This method checks if the the maintenance for the given source is required.

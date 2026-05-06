@@ -85,6 +85,29 @@ class mysql_source(object):
         return self.generated_column_cache[cache_key]
 
 
+    def __remap_unknown_columns(self, row_data, column_order, table):
+        """
+            The method remaps UNKNOWN_COL* keys produced by the binlog reader
+            to the source column names using the ordinal position collected
+            from information_schema.
+        """
+        remapped_row = {}
+        remapped = False
+        for column_name, column_value in row_data.items():
+            unknown_column = re.match(r'^UNKNOWN_COL(\d+)$', str(column_name))
+            if unknown_column:
+                column_position = int(unknown_column.group(1))
+                if column_position < len(column_order):
+                    column_name = column_order[column_position]
+                    remapped = True
+                else:
+                    self.logger.debug("Detected unknown column %s outside the source column map for table %s. The replay may fail. " % (column_name, table))
+            remapped_row[column_name] = column_value
+        if remapped:
+            self.logger.debug("Remapped UNKNOWN_COL entries for table %s using source column ordinal positions." % (table, ))
+        return remapped_row
+
+
 
     def __del__(self):
         """
@@ -1335,6 +1358,7 @@ class mysql_source(object):
 
             for table in table_list:
                 column_type = {}
+                column_order = []
                 sql_columns = """
                     SELECT
                         column_name as column_name,
@@ -1353,9 +1377,11 @@ class mysql_source(object):
                 column_data = self.cursor_buffered.fetchall()
                 for column in column_data:
                     column_type[column["column_name"]] = column["data_type"]
+                    column_order.append(column["column_name"])
                 table_dict = {}
                 table_dict["table_charset"] = table_charset
                 table_dict["column_type"] = column_type
+                table_dict["column_order"] = column_order
                 table_dict["generated_columns"] = self.__get_target_generated_columns(table["table_schema"], table["table_name"])
                 table_map[table["table_name"]] = table_dict
             table_type_map[schema] = table_map
@@ -1665,6 +1691,7 @@ class mysql_source(object):
                                 add_row = False
                         column_map = table_type_map[schema_row][table_name]["column_type"]
                         table_charset = table_type_map[schema_row][table_name]["table_charset"]
+                        column_order = table_type_map[schema_row][table_name]["column_order"]
                         generated_columns = table_type_map[schema_row][table_name]["generated_columns"]
 
                         global_data={
@@ -1687,6 +1714,9 @@ class mysql_source(object):
                             elif skip_event[1] == "insert":
                                 global_data["action"] = "insert"
                                 event_after=row["values"]
+
+                            event_after = self.__remap_unknown_columns(event_after, column_order, table_name)
+                            event_before = self.__remap_unknown_columns(event_before, column_order, table_name)
 
                             for column_name in generated_columns:
                                 event_after.pop(column_name, None)

@@ -38,6 +38,10 @@ version_help = """Displays pg_chameleon's installed  version."""
 rollbar_help = """Overrides the level for messages to be sent to rolllbar. One of: "critical", "error", "warning", "info". The Default is "info" """
 full_help = """When specified with run_maintenance the switch performs a vacuum full instead of a normal vacuum. """
 truncate_help = """Truncate the existing tables instead of replacing them."""
+binlog_name_help = """With start_replica, advances the replica to the specified MySQL binlog file before starting."""
+binlog_position_help = """With start_replica, advances the replica to the specified MySQL binlog position before starting."""
+force_from_help = """With start_replica, discards unreplayed batches and starts from the specified MySQL coordinate, e.g. binlog.000732:317."""
+reset_binlog_to_current_help = """With start_replica, discards unreplayed batches and starts from the current MySQL master status."""
 
 parser = argparse.ArgumentParser(description='Command line for pg_chameleon.',  add_help=True)
 parser.add_argument('command', type=str, help=command_help)
@@ -50,6 +54,10 @@ parser.add_argument('--debug', default=False, required=False, help=debug_help, a
 parser.add_argument('--version', action='version', help=version_help,version='{version}'.format(version=__version__))
 parser.add_argument('--rollbar-level', type=str, default="info", required=False, help=rollbar_help)
 parser.add_argument('--full', default=False, required=False, help=full_help, action='store_true')
+parser.add_argument('--binlog-name', '--binlog-file', dest='binlog_name', type=str, default=None, required=False, help=binlog_name_help)
+parser.add_argument('--binlog-position', type=int, default=None, required=False, help=binlog_position_help)
+parser.add_argument('--force-from', type=str, default=None, required=False, help=force_from_help)
+parser.add_argument('--reset-binlog-to-current', default=False, required=False, help=reset_binlog_to_current_help, action='store_true')
 args = parser.parse_args()
 
 

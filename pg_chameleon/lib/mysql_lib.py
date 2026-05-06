@@ -1806,6 +1806,10 @@ class mysql_source(object):
                     elif master_data:
                         master_status = self.get_master_coordinates()
                         self.pg_engine.update_batch_coordinates(id_batch, master_status)
+                else:
+                    self.logger.warning("No open replica batch found for source %s. Creating one from the current source coordinates." % (self.source, ))
+                    master_status = self.get_master_coordinates()
+                    self.pg_engine.ensure_open_batch(master_status)
                 self.pg_engine.keep_existing_schema = self.keep_existing_schema
                 self.pg_engine.check_source_consistent()
 

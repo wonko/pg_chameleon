@@ -3569,6 +3569,75 @@ class pg_engine(object):
 
         return next_batch_id
 
+    def ensure_open_batch(self, master_status):
+        """
+            This method creates an open replica batch from the master data when
+            the catalogue does not have one. If the same coordinates already
+            exist for an empty processed batch, the batch is reopened.
+
+            :param master_status: the master data with the binlogfile and the log position
+            :return: the batch id or none if no batch has been created
+            :rtype: integer
+        """
+        next_batch_id = None
+        master_data = master_status[0]
+        binlog_name = master_data["File"]
+        binlog_position = master_data["Position"]
+        log_table = self.swap_source_log_table()
+        if "Executed_Gtid_Set" in master_data:
+            executed_gtid_set = master_data["Executed_Gtid_Set"]
+        else:
+            executed_gtid_set = None
+
+        sql_master = """
+            INSERT INTO sch_chameleon.t_replica_batch
+                (
+                    i_id_source,
+                    t_binlog_name,
+                    i_binlog_position,
+                    t_gtid_set,
+                    v_log_table
+                )
+            VALUES
+                (
+                    %s,
+                    %s,
+                    %s,
+                    %s,
+                    %s
+                )
+            ON CONFLICT (i_id_source,t_binlog_name,i_binlog_position)
+                DO UPDATE
+                    SET
+                        t_gtid_set=EXCLUDED.t_gtid_set,
+                        v_log_table=EXCLUDED.v_log_table,
+                        b_started=False,
+                        b_processed=False,
+                        b_replayed=False,
+                        ts_processed=NULL,
+                        ts_replayed=NULL
+                    WHERE
+                            COALESCE(t_replica_batch.i_replayed,0)=0
+                        AND COALESCE(t_replica_batch.i_skipped,0)=0
+                        AND COALESCE(t_replica_batch.i_ddl,0)=0
+            RETURNING i_id_batch
+            ;
+        """
+
+        try:
+            self.pgsql_cur.execute(sql_master, (self.i_id_source, binlog_name, binlog_position, executed_gtid_set, log_table))
+            results = self.pgsql_cur.fetchone()
+            if results:
+                next_batch_id=results[0]
+                self.logger.warning("Created missing open batch %s for source %s at %s:%s" % (next_batch_id, self.source, binlog_name, binlog_position))
+            else:
+                self.logger.error("Could not create an open batch for source %s at %s:%s because the coordinates already belong to a replayed batch" % (self.source, binlog_name, binlog_position))
+        except psycopg2.Error as e:
+                    self.logger.error("SQLCODE: %s SQLERROR: %s" % (e.pgcode, e.pgerror))
+                    self.logger.error(self.pgsql_cur.mogrify(sql_master, (self.i_id_source, binlog_name, binlog_position, executed_gtid_set, log_table)))
+
+        return next_batch_id
+
     def update_batch_coordinates(self, id_batch, master_status):
         """
             This method updates the coordinates for an open batch without marking

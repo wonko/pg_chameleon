@@ -108,6 +108,82 @@ class mysql_source(object):
         return remapped_row
 
 
+    def __read_bool(self, value, default=False):
+        """
+            The method returns a boolean from common configuration values.
+        """
+        if value is None:
+            return default
+        if isinstance(value, bool):
+            return value
+        return str(value).lower() in ['1', 'true', 'yes', 'y', 'on']
+
+
+    def __mysql_compression_enabled(self):
+        """
+            The method returns whether MySQL protocol compression is enabled
+            for the configured source.
+        """
+        db_conn = self.source_config.get("db_conn", {})
+        compression_setting = self.source_config.get("mysql_compress", db_conn.get("compress", True))
+        return self.__read_bool(compression_setting, default=True)
+
+
+    def __is_buffered_connected(self):
+        """
+            The method returns whether the buffered MySQL connection is active.
+        """
+        try:
+            return self.conn_buffered.open
+        except:
+            return False
+
+
+    def __execute_copy_sql_hook(self, hook_name):
+        """
+            The method executes an optional copy SQL hook configured for
+            init_replica, refresh_schema and sync_tables.
+        """
+        hook_sql = self.source_config.get(hook_name, None)
+        if not hook_sql:
+            return
+        if isinstance(hook_sql, str):
+            hook_sql = [hook_sql]
+        close_connection = not self.__is_buffered_connected()
+        if close_connection:
+            self.connect_db_buffered()
+        try:
+            for copy_sql in hook_sql:
+                if copy_sql:
+                    self.logger.warning("Executing %s on MySQL source: %s" % (hook_name, copy_sql))
+                    self.cursor_buffered.execute(copy_sql)
+        finally:
+            if close_connection:
+                self.disconnect_db_buffered()
+
+
+    def __copy_tables_with_hooks(self):
+        """
+            The method wraps the table copy with optional pre/post SQL hooks.
+        """
+        copy_failed = False
+        self.__execute_copy_sql_hook("copy_pre_sql")
+        try:
+            self.disconnect_db_buffered()
+            self.__copy_tables()
+        except:
+            copy_failed = True
+            raise
+        finally:
+            try:
+                self.__execute_copy_sql_hook("copy_post_sql")
+            except Exception as post_error:
+                if copy_failed:
+                    self.logger.error("copy_post_sql failed after copy failure: %s" % (post_error, ))
+                else:
+                    raise
+
+
 
     def __del__(self):
         """
@@ -198,6 +274,7 @@ class mysql_source(object):
         db_conn = {key:str(value) for key, value in db_conn.items()}
         db_conn["port"] = int(db_conn["port"])
         db_conn["connect_timeout"] = int(db_conn["connect_timeout"])
+        mysql_compress = self.__mysql_compression_enabled()
 
 
 
@@ -208,6 +285,7 @@ class mysql_source(object):
             password = db_conn["password"],
             charset = db_conn["charset"],
             connect_timeout = db_conn["connect_timeout"],
+            compress = mysql_compress,
             cursorclass=pymysql.cursors.DictCursor
         )
         self.charset = db_conn["charset"]
@@ -236,6 +314,7 @@ class mysql_source(object):
         db_conn = {key:str(value) for key, value in db_conn.items()}
         db_conn["port"] = int(db_conn["port"])
         db_conn["connect_timeout"] = int(db_conn["connect_timeout"])
+        mysql_compress = self.__mysql_compression_enabled()
         self.conn_unbuffered=pymysql.connect(
             host = db_conn["host"],
             user = db_conn["user"],
@@ -243,6 +322,7 @@ class mysql_source(object):
             password = db_conn["password"],
             charset = db_conn["charset"],
             connect_timeout = db_conn["connect_timeout"],
+            compress = mysql_compress,
             cursorclass=pymysql.cursors.SSCursor
         )
         self.charset = db_conn["charset"]
@@ -1171,6 +1251,7 @@ class mysql_source(object):
         self.replica_conn["user"] = str(db_conn["user"])
         self.replica_conn["passwd"] = str(db_conn["password"])
         self.replica_conn["port"] = int(db_conn["port"])
+        self.replica_conn["compress"] = self.__mysql_compression_enabled()
         self.__build_table_exceptions()
         self.__build_skip_events()
         self.__check_mysql_config()
@@ -1235,12 +1316,10 @@ class mysql_source(object):
             self.pg_engine.schema_loading = self.schema_loading
             self.pg_engine.schema_tables = self.schema_tables
             if self.keep_existing_schema:
-                self.disconnect_db_buffered()
-                self.__copy_tables()
+                self.__copy_tables_with_hooks()
             else:
                 self.create_destination_tables()
-                self.disconnect_db_buffered()
-                self.__copy_tables()
+                self.__copy_tables_with_hooks()
                 self.pg_engine.grant_select()
                 self.pg_engine.swap_schemas()
                 self.drop_loading_schemas()
@@ -1291,12 +1370,10 @@ class mysql_source(object):
             self.pg_engine.schema_loading = self.schema_loading
             self.pg_engine.schema_tables = self.schema_tables
             if self.keep_existing_schema:
-                self.disconnect_db_buffered()
-                self.__copy_tables()
+                self.__copy_tables_with_hooks()
             else:
                 self.create_destination_tables()
-                self.disconnect_db_buffered()
-                self.__copy_tables()
+                self.__copy_tables_with_hooks()
                 self.pg_engine.grant_select()
                 self.pg_engine.swap_tables()
                 self.drop_loading_schemas()
@@ -1865,12 +1942,10 @@ class mysql_source(object):
             self.pg_engine.insert_source_timings()
             self.pg_engine.schema_loading = self.schema_loading
             if self.keep_existing_schema:
-                self.disconnect_db_buffered()
-                self.__copy_tables()
+                self.__copy_tables_with_hooks()
             else:
                 self.create_destination_tables()
-                self.disconnect_db_buffered()
-                self.__copy_tables()
+                self.__copy_tables_with_hooks()
                 self.pg_engine.grant_select()
                 self.pg_engine.swap_schemas()
                 self.drop_loading_schemas()

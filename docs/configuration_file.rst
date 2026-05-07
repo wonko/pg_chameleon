@@ -74,7 +74,7 @@ Database connection
 
 .. literalinclude:: ../pg_chameleon/configuration/config-example.yml
    :language: yaml
-   :lines: 30-68
+   :lines: 30-74
    :emphasize-lines: 3-9
    :linenos:
 
@@ -86,7 +86,7 @@ Schema mappings
 
 .. literalinclude:: ../pg_chameleon/configuration/config-example.yml
    :language: yaml
-   :lines: 30-68
+   :lines: 30-74
    :emphasize-lines: 10-11
    :linenos:
 
@@ -98,7 +98,7 @@ Limit and skip tables
 
 .. literalinclude:: ../pg_chameleon/configuration/config-example.yml
    :language: yaml
-   :lines: 30-68
+   :lines: 30-74
    :emphasize-lines: 12-15
    :linenos:
 
@@ -112,7 +112,7 @@ Grant select to option
 
 .. literalinclude:: ../pg_chameleon/configuration/config-example.yml
    :language: yaml
-   :lines: 30-68
+   :lines: 30-74
    :emphasize-lines: 16-17
    :linenos:
 
@@ -128,7 +128,7 @@ Source configuration parameters
 
 .. literalinclude:: ../pg_chameleon/configuration/config-example.yml
    :language: yaml
-   :lines: 30-68
+   :lines: 30-74
    :emphasize-lines: 18-31
    :linenos:
 
@@ -154,7 +154,7 @@ Skip events configuration
 
 .. literalinclude:: ../pg_chameleon/configuration/config-example.yml
    :language: yaml
-   :lines: 30-68
+   :lines: 30-74
    :emphasize-lines: 32-37
    :linenos:
 
@@ -167,7 +167,7 @@ Keep existing schema
 
 .. literalinclude:: ../pg_chameleon/configuration/config-example.yml
    :language: yaml
-   :lines: 30-68
+   :lines: 30-74
    :emphasize-lines: 38-38
    :linenos:
 
@@ -185,14 +185,44 @@ net_read_timeout
 
 .. literalinclude:: ../pg_chameleon/configuration/config-example.yml
    :language: yaml
-   :lines: 30-68
-   :emphasize-lines: 39-39
+   :lines: 30-74
+   :emphasize-lines: 41-41
    :linenos:
 
 Configures for the session the net_read_timeout.
 Useful if the table copy during init replica fails on slow networks.
 
 It defaults to 600 seconds.
+
+mysql_compress
+====================================
+
+.. literalinclude:: ../pg_chameleon/configuration/config-example.yml
+   :language: yaml
+   :lines: 30-74
+   :emphasize-lines: 42-42
+   :linenos:
+
+Enables MySQL protocol compression for the source connections, including the binlog stream.
+This can reduce network usage for remote sources at the cost of additional CPU usage.
+
+It defaults to Yes.
+
+copy_pre_sql and copy_post_sql
+====================================
+
+.. literalinclude:: ../pg_chameleon/configuration/config-example.yml
+   :language: yaml
+   :lines: 30-74
+   :emphasize-lines: 43-44
+   :linenos:
+
+Optional SQL hook or list of SQL hooks executed against the MySQL source around the table copy phase.
+``copy_pre_sql`` runs once before the table copy starts.
+``copy_post_sql`` runs once after the table copy finishes, and pg_chameleon attempts to run it even if the copy fails.
+
+The hooks are used by ``init_replica``, ``refresh_schema`` and ``sync_tables`` only.
+The binlog replication started with ``start_replica`` does not execute these hooks.
 
 PostgreSQL source type (EXPERIMENTAL)
 ================================================================

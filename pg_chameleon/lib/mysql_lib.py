@@ -150,6 +150,14 @@ class mysql_source(object):
         return self.__mysql_copy_driver() in ["mysql_connector", "mysql-connector", "connector_python"]
 
 
+    def __mysql_connector_use_pure(self):
+        """
+            The method returns whether MySQL Connector/Python should use the
+            pure Python implementation instead of the C extension.
+        """
+        return self.__read_bool(self.source_config.get("mysql_connector_use_pure", False))
+
+
     def __connect_mysql_connector(self, db_conn, buffered, dictionary):
         """
             The method creates a MySQL Connector/Python connection and cursor.
@@ -165,7 +173,7 @@ class mysql_source(object):
             charset = db_conn["charset"],
             connection_timeout = db_conn["connect_timeout"],
             compress = self.__mysql_compression_enabled(),
-            use_pure = True
+            use_pure = self.__mysql_connector_use_pure()
         )
         cursor = connection.cursor(buffered=buffered, dictionary=dictionary)
         return connection, cursor

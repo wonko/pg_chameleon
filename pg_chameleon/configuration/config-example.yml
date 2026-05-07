@@ -69,6 +69,7 @@ sources:
     keep_existing_schema: No
     net_read_timeout: 600
     mysql_copy_driver: mysql_connector
+    mysql_connector_use_pure: No
     mysql_compress: Yes
     copy_pre_sql:
     copy_post_sql:

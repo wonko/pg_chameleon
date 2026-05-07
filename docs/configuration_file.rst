@@ -74,7 +74,7 @@ Database connection
 
 .. literalinclude:: ../pg_chameleon/configuration/config-example.yml
    :language: yaml
-   :lines: 30-75
+   :lines: 30-76
    :emphasize-lines: 3-9
    :linenos:
 
@@ -86,7 +86,7 @@ Schema mappings
 
 .. literalinclude:: ../pg_chameleon/configuration/config-example.yml
    :language: yaml
-   :lines: 30-75
+   :lines: 30-76
    :emphasize-lines: 10-11
    :linenos:
 
@@ -98,7 +98,7 @@ Limit and skip tables
 
 .. literalinclude:: ../pg_chameleon/configuration/config-example.yml
    :language: yaml
-   :lines: 30-75
+   :lines: 30-76
    :emphasize-lines: 12-15
    :linenos:
 
@@ -112,7 +112,7 @@ Grant select to option
 
 .. literalinclude:: ../pg_chameleon/configuration/config-example.yml
    :language: yaml
-   :lines: 30-75
+   :lines: 30-76
    :emphasize-lines: 16-17
    :linenos:
 
@@ -128,7 +128,7 @@ Source configuration parameters
 
 .. literalinclude:: ../pg_chameleon/configuration/config-example.yml
    :language: yaml
-   :lines: 30-75
+   :lines: 30-76
    :emphasize-lines: 18-31
    :linenos:
 
@@ -154,7 +154,7 @@ Skip events configuration
 
 .. literalinclude:: ../pg_chameleon/configuration/config-example.yml
    :language: yaml
-   :lines: 30-75
+   :lines: 30-76
    :emphasize-lines: 32-37
    :linenos:
 
@@ -167,7 +167,7 @@ Keep existing schema
 
 .. literalinclude:: ../pg_chameleon/configuration/config-example.yml
    :language: yaml
-   :lines: 30-75
+   :lines: 30-76
    :emphasize-lines: 38-38
    :linenos:
 
@@ -185,7 +185,7 @@ net_read_timeout
 
 .. literalinclude:: ../pg_chameleon/configuration/config-example.yml
    :language: yaml
-   :lines: 30-75
+   :lines: 30-76
    :emphasize-lines: 41-41
    :linenos:
 
@@ -199,7 +199,7 @@ mysql_copy_driver
 
 .. literalinclude:: ../pg_chameleon/configuration/config-example.yml
    :language: yaml
-   :lines: 30-75
+   :lines: 30-76
    :emphasize-lines: 42-42
    :linenos:
 
@@ -209,13 +209,25 @@ The accepted values are ``mysql_connector`` and ``pymysql``.
 When set to ``mysql_connector`` pg_chameleon uses Oracle's MySQL Connector/Python for ``init_replica``, ``refresh_schema`` and ``sync_tables`` copy/query connections.
 The binlog stream used by ``start_replica`` continues to use the PyMySQL based ``mysql-replication`` library.
 
+mysql_connector_use_pure
+====================================
+
+.. literalinclude:: ../pg_chameleon/configuration/config-example.yml
+   :language: yaml
+   :lines: 30-76
+   :emphasize-lines: 43-43
+   :linenos:
+
+Controls whether Oracle's MySQL Connector/Python uses the pure Python implementation.
+It defaults to No, allowing the connector to use the C extension when available.
+
 mysql_compress
 ====================================
 
 .. literalinclude:: ../pg_chameleon/configuration/config-example.yml
    :language: yaml
-   :lines: 30-75
-   :emphasize-lines: 43-43
+   :lines: 30-76
+   :emphasize-lines: 44-44
    :linenos:
 
 Enables MySQL protocol compression for the source connections, including the binlog stream.
@@ -228,8 +240,8 @@ copy_pre_sql and copy_post_sql
 
 .. literalinclude:: ../pg_chameleon/configuration/config-example.yml
    :language: yaml
-   :lines: 30-75
-   :emphasize-lines: 44-45
+   :lines: 30-76
+   :emphasize-lines: 45-46
    :linenos:
 
 Optional SQL hook or list of SQL hooks executed against the MySQL source around the table copy phase.

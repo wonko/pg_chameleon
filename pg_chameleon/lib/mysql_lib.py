@@ -509,7 +509,7 @@ class mysql_source(object):
             ;
         """
         for schema in self.schema_list:
-            self.cursor_buffered.execute(sql_tables, (schema))
+            self.cursor_buffered.execute(sql_tables, (schema,))
             table_list = [table["table_name"] for table in self.cursor_buffered.fetchall()]
             try:
                 limit_tables = self.limit_tables[schema]

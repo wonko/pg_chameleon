@@ -8,6 +8,7 @@ except ImportError:
     mysql = None
 import codecs
 import binascii
+import traceback
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from threading import Lock
 from pymysqlreplication import BinLogStreamReader
@@ -1176,8 +1177,10 @@ class mysql_source(object):
                 #input("Press Enter to continue...")
                 self.logger.info("Adding constraint and indices to the destination table  %s.%s" %(destination_schema, table) )
                 self.pg_engine.create_idx_cons(destination_schema,table)
-        except:
+        except Exception as copy_error:
             self.logger.info("Could not copy the table %s. Excluding it from the replica." %(table) )
+            self.logger.error("Copy failure for table %s.%s: %s - %s" % (schema, table, type(copy_error).__name__, copy_error))
+            self.logger.debug(traceback.format_exc())
             raise
 
     def __copy_single_table_worker(self, schema, table):

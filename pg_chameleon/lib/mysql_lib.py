@@ -1164,6 +1164,8 @@ class mysql_source(object):
         try:
             if self.keep_existing_schema:
                 table_pkey = self.pg_engine.get_existing_pkey(destination_schema,table)
+                self.logger.info("Restoring any previously collected constraints and indices for destination table  %s.%s" %(destination_schema, table) )
+                self.pg_engine.create_idx_cons(destination_schema,table)
                 self.logger.info("Collecting constraints and indices from the destination table  %s.%s" %(destination_schema, table) )
                 self.pg_engine.collect_idx_cons(destination_schema,table)
                 self.logger.info("Removing constraints and indices from the destination table  %s.%s" %(destination_schema, table) )

@@ -3498,6 +3498,21 @@ class pg_engine(object):
                 )
             ;
         """
+        sql_clean_ukeys = """
+            DELETE FROM sch_chameleon.t_ukeys
+            WHERE
+                (v_schema_name,v_table_name)
+            IN
+                (
+                    SELECT
+                        v_schema_name,
+                        v_table_name
+                    FROM
+                        sch_chameleon.t_replica_tables
+                    WHERE i_id_source =%s
+                )
+            ;
+        """
         sql_clean_fkeys = """
             DELETE FROM sch_chameleon.t_fkeys
             WHERE
@@ -3515,6 +3530,7 @@ class pg_engine(object):
         """
         self.pgsql_cur.execute(sql_clean_idx, (self.i_id_source, ))
         self.pgsql_cur.execute(sql_clean_pkeys, (self.i_id_source, ))
+        self.pgsql_cur.execute(sql_clean_ukeys, (self.i_id_source, ))
         self.pgsql_cur.execute(sql_clean_fkeys, (self.i_id_source, ))
 
     def set_source_highwatermark(self, master_status, consistent):
@@ -3763,12 +3779,25 @@ class pg_engine(object):
                 AND v_table_name=%s
             ;
             """
+        sql_get_uk_drop = """
+            SELECT
+                v_index_name,
+                t_ukey_drop
+            FROM
+                sch_chameleon.t_ukeys
+            WHERE
+                    v_schema_name=%s
+                AND v_table_name=%s
+            ;
+            """
         self.pgsql_cur.execute(sql_get_fk_drop,(schema,table,))
         fk_drop=self.pgsql_cur.fetchall()
         self.pgsql_cur.execute(sql_get_idx_drop,(schema,table,))
         idx_drop=self.pgsql_cur.fetchall()
         self.pgsql_cur.execute(sql_get_pk_drop,(schema,table,))
         pk_drop=self.pgsql_cur.fetchall()
+        self.pgsql_cur.execute(sql_get_uk_drop,(schema,table,))
+        uk_drop=self.pgsql_cur.fetchall()
         for fk in fk_drop:
             self.logger.info("Dropping the foreign key {}".format(fk[0],))
             try:
@@ -3785,6 +3814,12 @@ class pg_engine(object):
             self.logger.info("Dropping the primary key {}".format(pk[0],))
             try:
                 self.pgsql_cur.execute(pk[1])
+            except:
+                pass
+        for uk in uk_drop:
+            self.logger.info("Dropping the unique constraint {}".format(uk[0],))
+            try:
+                self.pgsql_cur.execute(uk[1])
             except:
                 pass
 
@@ -3845,18 +3880,44 @@ class pg_engine(object):
                 AND v_table_name=%s
            ;
             """
+        sql_get_uk_create = """
+            SELECT
+                v_index_name,
+                t_ukey_create
+            FROM
+                sch_chameleon.t_ukeys
+            WHERE
+                     v_schema_name=%s
+                AND v_table_name=%s
+           ;
+            """
         self.pgsql_cur.execute(sql_get_idx_create,(schema,table,))
         idx_create=self.pgsql_cur.fetchall()
         self.pgsql_cur.execute(sql_get_pk_create,(schema,table,))
         pk_create=self.pgsql_cur.fetchall()
+        self.pgsql_cur.execute(sql_get_uk_create,(schema,table,))
+        uk_create=self.pgsql_cur.fetchall()
 
         for pk in pk_create:
             self.logger.info("Creating the primary key {}".format(pk[0],))
-            self.pgsql_cur.execute(pk[1])
+            try:
+                self.pgsql_cur.execute(pk[1])
+            except:
+                pass
+
+        for uk in uk_create:
+            self.logger.info("Creating the unique constraint {}".format(uk[0],))
+            try:
+                self.pgsql_cur.execute(uk[1])
+            except:
+                pass
 
         for idx in idx_create:
             self.logger.info("Creating the index {}".format(idx[0],))
-            self.pgsql_cur.execute(idx[1])
+            try:
+                self.pgsql_cur.execute(idx[1])
+            except:
+                pass
 
 
 

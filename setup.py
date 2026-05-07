@@ -49,6 +49,7 @@ setuptools.setup(
     ],
     install_requires=[
         'PyMySQL>=0.10.0',
+        'mysql-connector-python>=8.0.0',
         'mysql-replication>=0.31',
         'psycopg2-binary>=2.8.3',
         'PyYAML>=3.13',

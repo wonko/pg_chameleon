@@ -2,6 +2,10 @@ import time
 import sys
 import io
 import pymysql
+try:
+    import mysql.connector
+except ImportError:
+    mysql = None
 import codecs
 import binascii
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -129,12 +133,64 @@ class mysql_source(object):
         return self.__read_bool(compression_setting, default=True)
 
 
+    def __mysql_copy_driver(self):
+        """
+            The method returns the configured MySQL driver for regular query
+            and copy connections.
+        """
+        return self.source_config.get("mysql_copy_driver", self.source_config.get("mysql_driver", "pymysql"))
+
+
+    def __using_mysql_connector(self):
+        """
+            The method returns whether regular query and copy connections use
+            Oracle's MySQL Connector/Python.
+        """
+        return self.__mysql_copy_driver() in ["mysql_connector", "mysql-connector", "connector_python"]
+
+
+    def __connect_mysql_connector(self, db_conn, buffered, dictionary):
+        """
+            The method creates a MySQL Connector/Python connection and cursor.
+        """
+        if mysql is None:
+            self.logger.error("mysql_copy_driver is set to mysql_connector but mysql-connector-python is not installed.")
+            raise ImportError("mysql-connector-python is not installed")
+        connection = mysql.connector.connect(
+            host = db_conn["host"],
+            user = db_conn["user"],
+            port = db_conn["port"],
+            password = db_conn["password"],
+            charset = db_conn["charset"],
+            connection_timeout = db_conn["connect_timeout"],
+            compress = self.__mysql_compression_enabled(),
+            use_pure = True
+        )
+        cursor = connection.cursor(buffered=buffered, dictionary=dictionary)
+        return connection, cursor
+
+
+    def __log_mysql_compression_status(self, cursor, connection_name):
+        """
+            The method logs whether MySQL protocol compression was negotiated.
+        """
+        try:
+            cursor.execute("SHOW SESSION STATUS WHERE Variable_name IN ('Compression','Compression_algorithm','Compression_level');")
+            compression_status = cursor.fetchall()
+            self.logger.info("MySQL %s connection compression status: %s" % (connection_name, compression_status))
+        except Exception as error:
+            self.logger.debug("Could not read MySQL %s connection compression status: %s" % (connection_name, error))
+
+
     def __is_buffered_connected(self):
         """
             The method returns whether the buffered MySQL connection is active.
         """
         try:
-            return self.conn_buffered.open
+            if self.__using_mysql_connector():
+                return self.conn_buffered.is_connected()
+            else:
+                return self.conn_buffered.open
         except:
             return False
 
@@ -276,23 +332,26 @@ class mysql_source(object):
         db_conn["connect_timeout"] = int(db_conn["connect_timeout"])
         mysql_compress = self.__mysql_compression_enabled()
 
-
-
-        self.conn_buffered=pymysql.connect(
-            host = db_conn["host"],
-            user = db_conn["user"],
-            port = db_conn["port"],
-            password = db_conn["password"],
-            charset = db_conn["charset"],
-            connect_timeout = db_conn["connect_timeout"],
-            compress = mysql_compress,
-            cursorclass=pymysql.cursors.DictCursor
-        )
+        if self.__using_mysql_connector():
+            self.conn_buffered, self.cursor_buffered = self.__connect_mysql_connector(db_conn, buffered=True, dictionary=True)
+            self.cursor_buffered_fallback = self.conn_buffered.cursor(buffered=True, dictionary=True)
+        else:
+            self.conn_buffered=pymysql.connect(
+                host = db_conn["host"],
+                user = db_conn["user"],
+                port = db_conn["port"],
+                password = db_conn["password"],
+                charset = db_conn["charset"],
+                connect_timeout = db_conn["connect_timeout"],
+                compress = mysql_compress,
+                cursorclass=pymysql.cursors.DictCursor
+            )
+            self.cursor_buffered = self.conn_buffered.cursor()
+            self.cursor_buffered_fallback = self.conn_buffered.cursor()
         self.charset = db_conn["charset"]
-        self.cursor_buffered = self.conn_buffered.cursor()
-        self.cursor_buffered_fallback = self.conn_buffered.cursor()
         self.cursor_buffered.execute('SET SESSION   net_read_timeout = %s;',(self.net_read_timeout,))
         self.cursor_buffered_fallback.execute('SET SESSION   net_read_timeout = %s;', (self.net_read_timeout,))
+        self.__log_mysql_compression_status(self.cursor_buffered, "buffered")
 
 
     def disconnect_db_buffered(self):
@@ -315,19 +374,23 @@ class mysql_source(object):
         db_conn["port"] = int(db_conn["port"])
         db_conn["connect_timeout"] = int(db_conn["connect_timeout"])
         mysql_compress = self.__mysql_compression_enabled()
-        self.conn_unbuffered=pymysql.connect(
-            host = db_conn["host"],
-            user = db_conn["user"],
-            port = db_conn["port"],
-            password = db_conn["password"],
-            charset = db_conn["charset"],
-            connect_timeout = db_conn["connect_timeout"],
-            compress = mysql_compress,
-            cursorclass=pymysql.cursors.SSCursor
-        )
+        if self.__using_mysql_connector():
+            self.conn_unbuffered, self.cursor_unbuffered = self.__connect_mysql_connector(db_conn, buffered=False, dictionary=False)
+        else:
+            self.conn_unbuffered=pymysql.connect(
+                host = db_conn["host"],
+                user = db_conn["user"],
+                port = db_conn["port"],
+                password = db_conn["password"],
+                charset = db_conn["charset"],
+                connect_timeout = db_conn["connect_timeout"],
+                compress = mysql_compress,
+                cursorclass=pymysql.cursors.SSCursor
+            )
+            self.cursor_unbuffered = self.conn_unbuffered.cursor()
         self.charset = db_conn["charset"]
-        self.cursor_unbuffered = self.conn_unbuffered.cursor()
         self.cursor_unbuffered.execute('SET SESSION   net_read_timeout = %s;', (self.net_read_timeout,))
+        self.__log_mysql_compression_status(self.cursor_unbuffered, "unbuffered")
 
     def disconnect_db_unbuffered(self):
         """
@@ -752,7 +815,7 @@ class mysql_source(object):
             :return: the master's log coordinates for the given table
             :rtype: dictionary
         """
-        if not self.conn_buffered.open:
+        if not self.__is_buffered_connected():
             self.connect_db_buffered()
         sql_master = "SHOW MASTER STATUS;"
         self.cursor_buffered.execute(sql_master)

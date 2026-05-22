@@ -885,7 +885,7 @@ class mysql_source(object):
             total_slices = 1
         slice = 0
         rows_copied = 0
-        copy_started = time.time()
+        progress_window = []
         self.logger.debug("The table %s.%s will be copied in %s  estimated slice(s) of %s rows, using a transaction %s"  % (schema, table, total_slices, copy_limit, table_txs))
         out_file = '%s/%s_%s.csv' % (self.out_dir, schema, table )
         self.lock_table(schema, table)
@@ -903,6 +903,7 @@ class mysql_source(object):
         if table_txs:
             self.unlock_tables()
         while True:
+            slice_started = time.time()
             csv_results = self.cursor_unbuffered.fetchmany(copy_limit)
             if len(csv_results) == 0:
                 break
@@ -926,8 +927,11 @@ class mysql_source(object):
                 slice_insert.append(slice)
 
             rows_copied += rows_in_slice
-            elapsed = time.time() - copy_started
-            self.print_progress(slice+1,total_slices, schema, table, rows_copied, total_rows, elapsed)
+            progress_window.append((rows_in_slice, time.time() - slice_started))
+            progress_window = progress_window[-5:]
+            progress_rows = sum(window_slice[0] for window_slice in progress_window)
+            progress_elapsed = sum(window_slice[1] for window_slice in progress_window)
+            self.print_progress(slice+1,total_slices, schema, table, rows_copied, total_rows, progress_rows, progress_elapsed)
             slice+=1
 
             csv_file.close()
@@ -985,7 +989,7 @@ class mysql_source(object):
             num_insert +=1
 
 
-    def print_progress (self, iteration, total, schema, table, rows_copied=None, total_rows=None, elapsed=None):
+    def print_progress (self, iteration, total, schema, table, rows_copied=None, total_rows=None, progress_rows=None, progress_elapsed=None):
         """
             Print the copy progress in slices and estimated total slices.
             In order to reduce noise when the log level is info only the tables copied in multiple slices
@@ -994,10 +998,14 @@ class mysql_source(object):
             :param iteration: The slice number currently processed
             :param total: The estimated total slices
             :param table_name: The table name
+            :param rows_copied: The rows copied for the table so far
+            :param total_rows: The estimated or counted rows in the table
+            :param progress_rows: The rows copied in the recent progress window
+            :param progress_elapsed: The elapsed time for the recent progress window
         """
         progress_metrics = ""
-        if rows_copied is not None and elapsed and elapsed > 0:
-            rows_per_second = rows_copied/elapsed
+        if progress_rows is not None and progress_elapsed and progress_elapsed > 0:
+            rows_per_second = progress_rows/progress_elapsed
             progress_metrics = ", %s rows/s" % int(rows_per_second)
             if total_rows is not None and total_rows > rows_copied and rows_per_second > 0:
                 remaining_seconds = (total_rows - rows_copied)/rows_per_second

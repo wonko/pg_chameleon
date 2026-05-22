@@ -230,8 +230,8 @@ mysql_compress
    :emphasize-lines: 44-44
    :linenos:
 
-Enables MySQL protocol compression for the source connections, including the binlog stream.
-This can reduce network usage for remote sources at the cost of additional CPU usage.
+Enables MySQL protocol compression for regular source query and copy connections.
+The binlog stream is not compressed because it is handled by mysql-replication through PyMySQL, which does not support the compression parameter.
 
 It defaults to Yes.
 

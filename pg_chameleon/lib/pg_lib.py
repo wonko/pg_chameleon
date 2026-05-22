@@ -4115,6 +4115,9 @@ class pg_engine(object):
             binlog_pos = None
 
 
+        if table_pkey is None:
+            table_pkey = []
+
         if len(table_pkey) > 0:
             sql_insert = """
                 INSERT INTO sch_chameleon.t_replica_tables

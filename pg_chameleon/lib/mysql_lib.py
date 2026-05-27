@@ -24,7 +24,7 @@ class mysql_source(object):
             Class constructor, the method sets the class variables and configure the
             operating parameters from the args provided t the class.
         """
-        self.statement_skip = ['BEGIN', 'COMMIT']
+        self.statement_skip = ['BEGIN', 'COMMIT', 'SAVEPOINT', 'ROLLBACK TO', 'ROLLBACK TO SAVEPOINT', 'RELEASE SAVEPOINT']
         self.schema_tables = {}
         self.schema_mappings = {}
         self.schema_loading = {}
@@ -122,6 +122,16 @@ class mysql_source(object):
         if isinstance(value, bool):
             return value
         return str(value).lower() in ['1', 'true', 'yes', 'y', 'on']
+
+    def __skip_statement(self, statement):
+        """
+            The method returns whether a query event should be ignored.
+        """
+        normalised_statement = statement.strip().upper()
+        for skip_statement in self.statement_skip:
+            if normalised_statement == skip_statement or normalised_statement.startswith("%s " % skip_statement):
+                return True
+        return False
 
 
     def __mysql_compression_enabled(self):
@@ -1162,7 +1172,7 @@ class mysql_source(object):
         worker.pg_engine.set_source_id()
         return worker
 
-    def __copy_single_table(self, schema, table):
+    def __copy_single_table(self, schema, table, restore_indices=True):
         """
             The method copies one table and stores its replica metadata.
         """
@@ -1191,7 +1201,7 @@ class mysql_source(object):
 
                 table_pkey = self.__create_indices(schema, table)
             self.pg_engine.store_table(destination_schema, table, table_pkey, master_status)
-            if self.keep_existing_schema:
+            if self.keep_existing_schema and restore_indices:
                 #input("Press Enter to continue...")
                 self.logger.info("Adding constraint and indices to the destination table  %s.%s" %(destination_schema, table) )
                 self.pg_engine.create_idx_cons(destination_schema,table)
@@ -1201,14 +1211,14 @@ class mysql_source(object):
             self.logger.debug(traceback.format_exc())
             raise
 
-    def __copy_single_table_worker(self, schema, table):
+    def __copy_single_table_worker(self, schema, table, restore_indices=True):
         """
             The method copies one table using a dedicated worker object.
         """
         self.__log_copy_table_start(schema, table)
         worker = self.__init_copy_worker()
         try:
-            worker.__copy_single_table(schema, table)
+            worker.__copy_single_table(schema, table, restore_indices)
             self.__log_copy_table_finish()
         except:
             self.__log_copy_table_abort()
@@ -1217,6 +1227,28 @@ class mysql_source(object):
             worker.disconnect_db_buffered()
             worker.disconnect_db_unbuffered()
             worker.pg_engine.disconnect_db()
+
+    def __restore_idx_cons_worker(self, schema, table):
+        """
+            The method restores the destination indices after a table copy
+            using a dedicated PostgreSQL worker.
+        """
+        destination_schema = self.schema_loading[schema]["destination"]
+        worker = self.__init_copy_worker()
+        try:
+            self.logger.info("Adding constraint and indices to the destination table  %s.%s" %(destination_schema, table) )
+            worker.pg_engine.create_idx_cons(destination_schema,table)
+        finally:
+            worker.disconnect_db_buffered()
+            worker.disconnect_db_unbuffered()
+            worker.pg_engine.disconnect_db()
+
+    def __wait_idx_cons_workers(self, restore_futures):
+        """
+            The method waits for background destination index restores.
+        """
+        for restore_future in as_completed(restore_futures):
+            restore_future.result()
 
     def __get_copy_table_jobs(self):
         """
@@ -1230,30 +1262,41 @@ class mysql_source(object):
 
     def __copy_tables_parallel(self):
         """
-            The method copies tables in parallel using one worker per active thread.
+            The method copies tables in parallel using one worker per active
+            data copy thread. Existing destination indices are restored by a
+            single separate PostgreSQL worker when keep_existing_schema is set.
         """
         copy_jobs = self.__get_copy_table_jobs()
         self.__init_copy_progress(copy_jobs)
-        self.logger.info("Copying %s tables using %s parallel workers." % (len(copy_jobs), self.copy_parallel_workers))
+        self.logger.info("Copying %s tables using %s parallel data copy workers." % (len(copy_jobs), self.copy_parallel_workers))
         with ThreadPoolExecutor(max_workers=self.copy_parallel_workers) as executor:
+            restore_executor = ThreadPoolExecutor(max_workers=1) if self.keep_existing_schema else None
+            restore_futures = []
             future_jobs = {
-                executor.submit(self.__copy_single_table_worker, schema, table): (schema, table)
+                executor.submit(self.__copy_single_table_worker, schema, table, not self.keep_existing_schema): (schema, table)
                 for schema, table in copy_jobs
             }
-            for future in as_completed(future_jobs):
-                schema, table = future_jobs[future]
-                try:
-                    future.result()
-                except:
-                    self.logger.error("Parallel copy failed for table %s.%s" % (schema, table))
-                    raise
+            try:
+                for future in as_completed(future_jobs):
+                    schema, table = future_jobs[future]
+                    try:
+                        future.result()
+                        if restore_executor:
+                            restore_futures.append(restore_executor.submit(self.__restore_idx_cons_worker, schema, table))
+                    except:
+                        self.logger.error("Parallel copy failed for table %s.%s" % (schema, table))
+                        raise
+                self.__wait_idx_cons_workers(restore_futures)
+            finally:
+                if restore_executor:
+                    restore_executor.shutdown()
 
     def __copy_tables(self):
         """
             The method copies the data between tables, from the mysql schema to the corresponding
             postgresql loading schema. Before the copy starts the table is locked and then the lock is released.
             If keep_existing_schema is true for the source then the tables are truncated before the copy,
-            the indices are left in place and a REINDEX TABLE is executed after the copy.
+            and the stored indices and constraints are restored after the row copy.
         """
 
 
@@ -1262,14 +1305,23 @@ class mysql_source(object):
         else:
             copy_jobs = self.__get_copy_table_jobs()
             self.__init_copy_progress(copy_jobs)
-            for schema, table in copy_jobs:
-                self.__log_copy_table_start(schema, table)
-                try:
-                    self.__copy_single_table(schema, table)
-                    self.__log_copy_table_finish()
-                except:
-                    self.__log_copy_table_abort()
-                    raise
+            restore_executor = ThreadPoolExecutor(max_workers=1) if self.keep_existing_schema else None
+            restore_futures = []
+            try:
+                for schema, table in copy_jobs:
+                    self.__log_copy_table_start(schema, table)
+                    try:
+                        self.__copy_single_table(schema, table, not self.keep_existing_schema)
+                        self.__log_copy_table_finish()
+                        if restore_executor:
+                            restore_futures.append(restore_executor.submit(self.__restore_idx_cons_worker, schema, table))
+                    except:
+                        self.__log_copy_table_abort()
+                        raise
+                self.__wait_idx_cons_workers(restore_futures)
+            finally:
+                if restore_executor:
+                    restore_executor.shutdown()
 
     def set_copy_max_memory(self):
         """
@@ -1761,7 +1813,7 @@ class mysql_source(object):
                 except:
                     schema_query = binlogevent.schema
 
-                if binlogevent.query.strip().upper() not in self.statement_skip and schema_query in self.schema_mappings:
+                if not self.__skip_statement(binlogevent.query) and schema_query in self.schema_mappings:
                     close_batch=True
                     destination_schema = self.schema_mappings[schema_query]
                     log_position = binlogevent.packet.log_pos

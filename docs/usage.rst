@@ -28,7 +28,7 @@ Command line reference
     ``set_configuration_files``, Setup the example configuration files and directories in ``~/.pg_chameleon``
     ``show_config``, Displays the configuration  for the configuration, ``--config``
     ``show_sources``, Displays the sourcches configured for the configuration, ``--config``
-    ``show_status``,Displays an overview of the status of the sources configured within the configuration. Specifying the source gives more details about that source , ``--config`` ``--source``
+    ``show_status``,Displays an overview of the status of the sources configured within the configuration. Specifying the source gives schema mappings, table counts, per-table replay counters, pending rows and binlog positions, ``--config`` ``--source``
     ``show_errors``,Displays  the errors logged by the replay  function. If a log id is specified then the log entry is displayed entirely, ``--config`` ``--logid``
     ``create_replica_schema``, Creates a new replication schema into the config's destination database, ``--config``
     ``drop_replica_schema``, Drops an existing replication schema from the config's destination database, ``--config``
@@ -196,7 +196,6 @@ To detach the replica
 .. code-block:: none
 
   chameleon detach_replica --config default --source example
-
 
 
 

@@ -826,6 +826,7 @@ class replica_engine(object):
         schema_mappings = configuration_data[1]
         table_status = configuration_data[2]
         replica_counters = configuration_data[3]
+        table_replay_status = configuration_data[4]
         tab_headers = ['Source id',  'Source name', 'Type',  'Status', 'Consistent' ,  'Read lag',  'Last read',  'Replay lag' , 'Last replay']
         tab_body = []
         for status in configuration_status:
@@ -881,6 +882,26 @@ class replica_engine(object):
             if tables_no_replica[2]:
                 print('\n== Tables with replica disabled ==')
                 print("\n".join(tables_no_replica[2]))
+        if table_replay_status:
+            print('\n== Table replay status ==')
+            tab_headers = [
+                'Source table',
+                'Target table',
+                'Status',
+                'Replayed rows',
+                'Replayed DDL',
+                'Pending rows',
+                'Pending DDL',
+                'Last replayed position',
+                'Last replayed at',
+                'Latest pending position',
+                'Latest pending at',
+                'Init/sync position',
+            ]
+            tab_body = []
+            for table_status_row in table_replay_status:
+                tab_body.append(list(table_status_row))
+            print(tabulate(tab_body, headers=tab_headers, tablefmt="simple"))
 
     def detach_replica(self):
         """

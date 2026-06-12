@@ -18,6 +18,11 @@ from pymysqlreplication.event import RotateEvent
 from pg_chameleon import sql_token
 from os import remove
 import re
+
+FTWRL_LOCK = Lock()
+FTWRL_LAST_UNLOCK = 0
+FTWRL_COOLDOWN_SECONDS = 5
+
 class mysql_source(object):
     def __init__(self):
         """
@@ -42,6 +47,7 @@ class mysql_source(object):
         self.copy_table_finished = 0
         self.copy_table_working = 0
         self.copy_table_lock = Lock()
+        self.ftwrl_lock_acquired = False
         self.generated_column_cache = {}
 
     def __format_seconds(self, seconds):
@@ -382,6 +388,7 @@ class mysql_source(object):
             self.conn_buffered.close()
         except:
             pass
+        self.__release_ftwrl_lock()
 
     def connect_db_unbuffered(self):
         """
@@ -804,6 +811,36 @@ class mysql_source(object):
         self.logger.debug("reading and discarding 1 row from `%s`.`%s`" % (schema, table))
         self.cursor_unbuffered.execute("SELECT * FROM `%s`.`%s` LIMIT 1" % (schema, table))
 
+    def __acquire_ftwrl_lock(self, schema, table):
+        """
+            The method serialises FTWRL operations and applies a cooldown after
+            the previous lock was released.
+        """
+        global FTWRL_LAST_UNLOCK
+
+        self.logger.debug("waiting for FTWRL gate for `%s`.`%s`" % (schema, table))
+        FTWRL_LOCK.acquire()
+        self.ftwrl_lock_acquired = True
+        seconds_since_unlock = time.monotonic() - FTWRL_LAST_UNLOCK
+        if FTWRL_LAST_UNLOCK > 0 and seconds_since_unlock < FTWRL_COOLDOWN_SECONDS:
+            sleep_seconds = FTWRL_COOLDOWN_SECONDS - seconds_since_unlock
+            self.logger.info(
+                "Waiting %.1f seconds before locking `%s`.`%s` with FTWRL"
+                % (sleep_seconds, schema, table)
+            )
+            time.sleep(sleep_seconds)
+
+    def __release_ftwrl_lock(self):
+        """
+            The method releases the shared FTWRL gate.
+        """
+        global FTWRL_LAST_UNLOCK
+
+        if self.ftwrl_lock_acquired:
+            FTWRL_LAST_UNLOCK = time.monotonic()
+            self.ftwrl_lock_acquired = False
+            FTWRL_LOCK.release()
+
     def lock_table(self, schema, table):
         """
             The method flushes the given table with read lock.
@@ -816,7 +853,12 @@ class mysql_source(object):
         self.logger.debug("locking the table `%s`.`%s`" % (schema, table) )
         sql_lock = "FLUSH TABLES `%s`.`%s` WITH READ LOCK;" %(schema, table)
         self.logger.debug("collecting the master's coordinates for table `%s`.`%s`" % (schema, table) )
-        self.cursor_buffered.execute(sql_lock)
+        self.__acquire_ftwrl_lock(schema, table)
+        try:
+            self.cursor_buffered.execute(sql_lock)
+        except:
+            self.__release_ftwrl_lock()
+            raise
 
     def unlock_tables(self):
         """
@@ -824,7 +866,10 @@ class mysql_source(object):
         """
         self.logger.debug("unlocking the tables")
         sql_unlock = "UNLOCK TABLES;"
-        self.cursor_buffered.execute(sql_unlock)
+        try:
+            self.cursor_buffered.execute(sql_unlock)
+        finally:
+            self.__release_ftwrl_lock()
 
     def get_master_coordinates(self):
         """

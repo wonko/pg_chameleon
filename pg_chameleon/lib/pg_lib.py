@@ -1251,6 +1251,7 @@ class pg_engine(object):
             self.source_config = self.sources[self.source]
             replay_max_rows = self.source_config["replay_max_rows"]
             exit_on_error = True if self.source_config["on_error_replay"]=='exit' else False
+            self.ensure_table_status_catalog()
             while continue_loop:
                 if self.log_replay_statements:
                     if not self.log_replay_statements_checked:
@@ -1694,6 +1695,7 @@ class pg_engine(object):
         replay_function_sql = replay_function.read()
         replay_function.close()
         self.connect_db()
+        self.ensure_table_status_catalog()
         self.pgsql_cur.execute(replay_function_sql)
 
 
@@ -2617,9 +2619,11 @@ class pg_engine(object):
             :rtype: list
         """
         self.connect_db()
+        self.ensure_table_status_catalog()
         schema_mappings = None
         table_status = None
         replica_counters = None
+        table_replay_status = None
         if self.source == "*":
             source_filter = ""
 
@@ -2717,6 +2721,100 @@ class pg_engine(object):
             self.pgsql_cur.execute(sql_tab_status, (self.source, ))
             table_status = self.pgsql_cur.fetchall()
 
+            sql_table_replay_status = """
+                WITH source_mappings AS
+                (
+                    SELECT
+                        i_id_source,
+                        (mappings).key AS origin_schema,
+                        (mappings).value AS destination_schema
+                    FROM
+                    (
+                        SELECT
+                            i_id_source,
+                            jsonb_each_text(jsb_schema_mappings) AS mappings
+                        FROM
+                            sch_chameleon.t_sources
+                        WHERE
+                            t_source=%s
+                    ) sch
+                ),
+                pending_events AS
+                (
+                    SELECT
+                        log.v_schema_name,
+                        log.v_table_name,
+                        count(*) FILTER (WHERE log.enm_binlog_event <> 'ddl') AS pending_rows,
+                        count(*) FILTER (WHERE log.enm_binlog_event = 'ddl') AS pending_ddl,
+                        (array_agg(
+                            format('%s:%s', log.t_binlog_name, log.i_binlog_position)
+                            ORDER BY
+                                split_part(log.t_binlog_name,'.',2)::bigint DESC,
+                                log.i_binlog_position DESC
+                        ))[1] AS pending_position,
+                        max(log.ts_event_datetime) AS pending_event_time
+                    FROM
+                        sch_chameleon.t_log_replica log
+                        INNER JOIN sch_chameleon.t_replica_batch bat
+                            ON bat.i_id_batch=log.i_id_batch
+                    WHERE
+                            bat.i_id_source=%s
+                        AND NOT bat.b_replayed
+                    GROUP BY
+                        log.v_schema_name,
+                        log.v_table_name
+                )
+                SELECT
+                    format('%s.%s', sm.origin_schema, tab.v_table_name) AS source_table,
+                    format('%s.%s', tab.v_schema_name, tab.v_table_name) AS target_table,
+                    CASE
+                        WHEN tab.b_replica_enabled
+                        THEN 'enabled'
+                        ELSE 'disabled'
+                    END AS replica_status,
+                    COALESCE(stat.i_replayed, 0) AS replayed_rows,
+                    COALESCE(stat.i_ddl, 0) AS replayed_ddl,
+                    COALESCE(pending.pending_rows, 0) AS pending_rows,
+                    COALESCE(pending.pending_ddl, 0) AS pending_ddl,
+                    CASE
+                        WHEN stat.t_binlog_name IS NOT NULL
+                        THEN format('%s:%s', stat.t_binlog_name, stat.i_binlog_position)
+                        ELSE ''
+                    END AS last_replayed_position,
+                    COALESCE(stat.ts_last_replayed::text, '') AS last_replayed_at,
+                    CASE
+                        WHEN pending.pending_position IS NOT NULL
+                        THEN pending.pending_position
+                        ELSE ''
+                    END AS latest_pending_position,
+                    COALESCE(pending.pending_event_time::text, '') AS latest_pending_at,
+                    CASE
+                        WHEN tab.t_binlog_name IS NOT NULL
+                        THEN format('%s:%s', tab.t_binlog_name, tab.i_binlog_position)
+                        ELSE ''
+                    END AS init_sync_position
+                FROM
+                    sch_chameleon.t_replica_tables tab
+                    INNER JOIN source_mappings sm
+                        ON sm.i_id_source=tab.i_id_source
+                        AND sm.destination_schema=tab.v_schema_name
+                    LEFT JOIN sch_chameleon.t_replica_table_status stat
+                        ON stat.i_id_source=tab.i_id_source
+                        AND stat.v_schema_name=tab.v_schema_name
+                        AND stat.v_table_name=tab.v_table_name
+                    LEFT JOIN pending_events pending
+                        ON pending.v_schema_name=tab.v_schema_name
+                        AND pending.v_table_name=tab.v_table_name
+                WHERE
+                    tab.i_id_source=%s
+                ORDER BY
+                    sm.origin_schema,
+                    tab.v_table_name
+                ;
+            """
+            self.pgsql_cur.execute(sql_table_replay_status, (self.source, self.i_id_source, self.i_id_source, ))
+            table_replay_status = self.pgsql_cur.fetchall()
+
 
 
 
@@ -2770,7 +2868,29 @@ class pg_engine(object):
 
 
         self.disconnect_db()
-        return [configuration_status, schema_mappings, table_status, replica_counters]
+        return [configuration_status, schema_mappings, table_status, replica_counters, table_replay_status]
+
+    def ensure_table_status_catalog(self):
+        """
+            The method creates the per-table replay status catalogue if missing.
+        """
+        self.connect_db()
+        sql_table_status = """
+            CREATE TABLE IF NOT EXISTS sch_chameleon.t_replica_table_status
+            (
+                i_id_source bigint NOT NULL,
+                v_schema_name character varying(64) NOT NULL,
+                v_table_name character varying(64) NOT NULL,
+                i_replayed bigint NOT NULL DEFAULT 0,
+                i_ddl bigint NOT NULL DEFAULT 0,
+                t_binlog_name text,
+                i_binlog_position bigint,
+                ts_last_replayed timestamp without time zone,
+                CONSTRAINT pk_t_replica_table_status PRIMARY KEY (i_id_source, v_schema_name, v_table_name)
+            )
+            ;
+        """
+        self.pgsql_cur.execute(sql_table_status)
 
     def insert_source_timings(self):
         """
@@ -4156,6 +4276,16 @@ class pg_engine(object):
                 binlog_pos
                 )
             )
+            self.ensure_table_status_catalog()
+            sql_reset_table_status = """
+                DELETE FROM sch_chameleon.t_replica_table_status
+                WHERE
+                        i_id_source=%s
+                    AND v_schema_name=%s
+                    AND v_table_name=%s
+                ;
+            """
+            self.pgsql_cur.execute(sql_reset_table_status, (self.i_id_source, schema, table, ))
         else:
             self.logger.warning("Missing primary key. The table %s.%s will not be replicated." % (schema, table,))
             self.unregister_table(schema,  table)

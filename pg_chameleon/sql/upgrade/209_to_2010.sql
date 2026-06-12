@@ -259,6 +259,40 @@ $BODY$
                 EXECUTE v_r_statements.t_sql;
                 v_i_ddl:=v_i_ddl+v_r_statements.i_ddl;
                 v_i_replayed:=v_i_replayed+v_r_statements.i_replay;
+                IF to_regclass('sch_chameleon.t_replica_table_status') IS NOT NULL
+                THEN
+                    INSERT INTO sch_chameleon.t_replica_table_status
+                        (
+                            i_id_source,
+                            v_schema_name,
+                            v_table_name,
+                            i_replayed,
+                            i_ddl,
+                            t_binlog_name,
+                            i_binlog_position,
+                            ts_last_replayed
+                        )
+                    VALUES
+                        (
+                            p_i_id_source,
+                            v_r_statements.v_schema_name,
+                            v_r_statements.v_table_name,
+                            v_r_statements.i_replay,
+                            v_r_statements.i_ddl,
+                            v_r_statements.t_binlog_name,
+                            v_r_statements.i_binlog_position,
+                            clock_timestamp()
+                        )
+                    ON CONFLICT (i_id_source, v_schema_name, v_table_name)
+                        DO UPDATE
+                        SET
+                            i_replayed=sch_chameleon.t_replica_table_status.i_replayed+EXCLUDED.i_replayed,
+                            i_ddl=sch_chameleon.t_replica_table_status.i_ddl+EXCLUDED.i_ddl,
+                            t_binlog_name=EXCLUDED.t_binlog_name,
+                            i_binlog_position=EXCLUDED.i_binlog_position,
+                            ts_last_replayed=EXCLUDED.ts_last_replayed
+                    ;
+                END IF;
 
 
             EXCEPTION

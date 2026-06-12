@@ -151,6 +151,22 @@ WITH (
   OIDS=FALSE
 );
 
+CREATE TABLE sch_chameleon.t_replica_table_status
+(
+  i_id_source bigint NOT NULL,
+  v_schema_name character varying(64) NOT NULL,
+  v_table_name character varying(64) NOT NULL,
+  i_replayed bigint NOT NULL DEFAULT 0,
+  i_ddl bigint NOT NULL DEFAULT 0,
+  t_binlog_name text,
+  i_binlog_position bigint,
+  ts_last_replayed timestamp without time zone,
+  CONSTRAINT pk_t_replica_table_status PRIMARY KEY (i_id_source, v_schema_name, v_table_name)
+)
+WITH (
+  OIDS=FALSE
+);
+
 CREATE UNIQUE INDEX idx_t_replica_tables_table_schema
     ON sch_chameleon.t_replica_tables (i_id_source,v_table_name,v_schema_name);
 
@@ -547,6 +563,40 @@ $BODY$
                 EXECUTE v_r_statements.t_sql;
                 v_i_ddl:=v_i_ddl+v_r_statements.i_ddl;
                 v_i_replayed:=v_i_replayed+v_r_statements.i_replay;
+                IF to_regclass('sch_chameleon.t_replica_table_status') IS NOT NULL
+                THEN
+                    INSERT INTO sch_chameleon.t_replica_table_status
+                        (
+                            i_id_source,
+                            v_schema_name,
+                            v_table_name,
+                            i_replayed,
+                            i_ddl,
+                            t_binlog_name,
+                            i_binlog_position,
+                            ts_last_replayed
+                        )
+                    VALUES
+                        (
+                            p_i_id_source,
+                            v_r_statements.v_schema_name,
+                            v_r_statements.v_table_name,
+                            v_r_statements.i_replay,
+                            v_r_statements.i_ddl,
+                            v_r_statements.t_binlog_name,
+                            v_r_statements.i_binlog_position,
+                            clock_timestamp()
+                        )
+                    ON CONFLICT (i_id_source, v_schema_name, v_table_name)
+                        DO UPDATE
+                        SET
+                            i_replayed=sch_chameleon.t_replica_table_status.i_replayed+EXCLUDED.i_replayed,
+                            i_ddl=sch_chameleon.t_replica_table_status.i_ddl+EXCLUDED.i_ddl,
+                            t_binlog_name=EXCLUDED.t_binlog_name,
+                            i_binlog_position=EXCLUDED.i_binlog_position,
+                            ts_last_replayed=EXCLUDED.ts_last_replayed
+                    ;
+                END IF;
 
 
             EXCEPTION

@@ -331,6 +331,28 @@ $BODY$
         v_i_skipped:=0;
         v_ty_status.b_continue:=FALSE;
         v_ty_status.b_error:=FALSE;
+        UPDATE ONLY sch_chameleon.t_replica_batch bat
+            SET
+                b_replayed=True,
+                i_replayed=0,
+                i_skipped=0,
+                i_ddl=0,
+                ts_replayed=clock_timestamp()
+        WHERE
+                bat.b_started
+            AND bat.b_processed
+            AND NOT bat.b_replayed
+            AND bat.i_id_source=p_i_id_source
+            AND NOT EXISTS
+                (
+                    SELECT
+                        1
+                    FROM
+                        sch_chameleon.t_batch_events evt
+                    WHERE
+                        evt.i_id_batch=bat.i_id_batch
+                )
+        ;
         RAISE DEBUG 'Searching batches to replay for source id: %', p_i_id_source;
         v_i_id_batch:= (
             SELECT

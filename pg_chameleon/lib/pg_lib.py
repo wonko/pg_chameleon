@@ -1273,6 +1273,19 @@ class pg_engine(object):
                 replay_status = self.pgsql_cur.fetchone()
                 if replay_status[0]:
                     self.logger.info("Replayed at most %s rows for source %s" % (replay_max_rows, self.source) )
+                else:
+                    replay_backlog = self.get_replay_backlog()
+                    if replay_backlog:
+                        self.logger.debug(
+                            "No replay statements for source %s. Backlog - open: %s, processed queued batches: %s, queued events: %s, processed batches without queue: %s"
+                            % (
+                                self.source,
+                                replay_backlog[0],
+                                replay_backlog[1],
+                                replay_backlog[2],
+                                replay_backlog[3],
+                            )
+                        )
                 replica_paused = self.get_replica_paused()
                 if replica_paused:
                     break
@@ -1283,6 +1296,38 @@ class pg_engine(object):
                 if replay_status[2]:
                     tables_error.append(replay_status[2])
         return tables_error
+
+    def get_replay_backlog(self):
+        """
+            The method returns a compact replay backlog summary for diagnostics.
+        """
+        sql_backlog = """
+            WITH batches AS
+            (
+                SELECT
+                    bat.i_id_batch,
+                    bat.b_started,
+                    bat.b_processed,
+                    bat.b_replayed,
+                    evt.i_id_event
+                FROM
+                    sch_chameleon.t_replica_batch bat
+                    LEFT JOIN sch_chameleon.t_batch_events evt
+                        ON evt.i_id_batch=bat.i_id_batch
+                WHERE
+                    bat.i_id_source=%s
+            )
+            SELECT
+                count(*) FILTER (WHERE NOT b_processed AND NOT b_replayed) AS open_batches,
+                count(*) FILTER (WHERE b_started AND b_processed AND NOT b_replayed AND i_id_event IS NOT NULL) AS processed_queued_batches,
+                coalesce(sum(array_length(i_id_event, 1)) FILTER (WHERE b_started AND b_processed AND NOT b_replayed), 0) AS queued_events,
+                count(*) FILTER (WHERE b_started AND b_processed AND NOT b_replayed AND i_id_event IS NULL) AS processed_batches_without_queue
+            FROM
+                batches
+            ;
+        """
+        self.pgsql_cur.execute(sql_backlog, (self.i_id_source, ))
+        return self.pgsql_cur.fetchone()
 
 
     def set_consistent_table(self, table, schema):

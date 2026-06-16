@@ -684,6 +684,8 @@ class replica_engine(object):
             else:
                 self.logger.info("Cleaning not processed batches for source %s" % (self.args.source))
                 self.pg_engine.clean_not_processed_batches()
+                self.pg_engine.ensure_log_replica_indexes()
+                self.pg_engine.restore_stored_idx_cons()
                 if self.args.reset_binlog_to_current and (self.args.force_from or self.args.binlog_name or self.args.binlog_position):
                     print("--reset-binlog-to-current cannot be combined with --force-from, --binlog-name, or --binlog-position.")
                     self.pg_engine.disconnect_db()

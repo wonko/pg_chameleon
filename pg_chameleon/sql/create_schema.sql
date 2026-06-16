@@ -296,6 +296,22 @@ BEGIN
                         r_tables.v_log_table
         );
     EXECUTE t_sql;
+    t_sql:=format('
+            CREATE INDEX IF NOT EXISTS idx_batch_event_%s
+            ON sch_chameleon.%I (i_id_batch, i_id_event)
+            ;',
+            r_tables.v_log_table,
+                        r_tables.v_log_table
+        );
+    EXECUTE t_sql;
+    t_sql:=format('
+            CREATE INDEX IF NOT EXISTS idx_batch_table_%s
+            ON sch_chameleon.%I (i_id_batch, v_schema_name, v_table_name)
+            ;',
+            r_tables.v_log_table,
+                        r_tables.v_log_table
+        );
+    EXECUTE t_sql;
     END LOOP;
 END
 $BODY$

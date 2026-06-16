@@ -2747,7 +2747,7 @@ class pg_engine(object):
                         count(*) FILTER (WHERE log.enm_binlog_event <> 'ddl') AS pending_rows,
                         count(*) FILTER (WHERE log.enm_binlog_event = 'ddl') AS pending_ddl,
                         (array_agg(
-                            format('%s:%s', log.t_binlog_name, log.i_binlog_position)
+                            format('%%s:%%s', log.t_binlog_name, log.i_binlog_position)
                             ORDER BY
                                 split_part(log.t_binlog_name,'.',2)::bigint DESC,
                                 log.i_binlog_position DESC
@@ -2765,8 +2765,8 @@ class pg_engine(object):
                         log.v_table_name
                 )
                 SELECT
-                    format('%s.%s', sm.origin_schema, tab.v_table_name) AS source_table,
-                    format('%s.%s', tab.v_schema_name, tab.v_table_name) AS target_table,
+                    format('%%s.%%s', sm.origin_schema, tab.v_table_name) AS source_table,
+                    format('%%s.%%s', tab.v_schema_name, tab.v_table_name) AS target_table,
                     CASE
                         WHEN tab.b_replica_enabled
                         THEN 'enabled'
@@ -2778,7 +2778,7 @@ class pg_engine(object):
                     COALESCE(pending.pending_ddl, 0) AS pending_ddl,
                     CASE
                         WHEN stat.t_binlog_name IS NOT NULL
-                        THEN format('%s:%s', stat.t_binlog_name, stat.i_binlog_position)
+                        THEN format('%%s:%%s', stat.t_binlog_name, stat.i_binlog_position)
                         ELSE ''
                     END AS last_replayed_position,
                     COALESCE(stat.ts_last_replayed::text, '') AS last_replayed_at,
@@ -2790,7 +2790,7 @@ class pg_engine(object):
                     COALESCE(pending.pending_event_time::text, '') AS latest_pending_at,
                     CASE
                         WHEN tab.t_binlog_name IS NOT NULL
-                        THEN format('%s:%s', tab.t_binlog_name, tab.i_binlog_position)
+                        THEN format('%%s:%%s', tab.t_binlog_name, tab.i_binlog_position)
                         ELSE ''
                     END AS init_sync_position
                 FROM

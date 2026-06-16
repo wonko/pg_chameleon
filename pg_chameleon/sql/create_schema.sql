@@ -316,6 +316,7 @@ $BODY$
         v_t_ddl     text;
         v_t_main_sql    text;
         v_t_delete_sql    text;
+        v_t_table_status_sql    text;
         v_i_replayed    integer;
         v_i_skipped   integer;
         v_i_ddl     integer;
@@ -563,40 +564,7 @@ $BODY$
                 EXECUTE v_r_statements.t_sql;
                 v_i_ddl:=v_i_ddl+v_r_statements.i_ddl;
                 v_i_replayed:=v_i_replayed+v_r_statements.i_replay;
-                IF to_regclass('sch_chameleon.t_replica_table_status') IS NOT NULL
-                THEN
-                    INSERT INTO sch_chameleon.t_replica_table_status
-                        (
-                            i_id_source,
-                            v_schema_name,
-                            v_table_name,
-                            i_replayed,
-                            i_ddl,
-                            t_binlog_name,
-                            i_binlog_position,
-                            ts_last_replayed
-                        )
-                    VALUES
-                        (
-                            p_i_id_source,
-                            v_r_statements.v_schema_name,
-                            v_r_statements.v_table_name,
-                            v_r_statements.i_replay,
-                            v_r_statements.i_ddl,
-                            v_r_statements.t_binlog_name,
-                            v_r_statements.i_binlog_position,
-                            clock_timestamp()
-                        )
-                    ON CONFLICT (i_id_source, v_schema_name, v_table_name)
-                        DO UPDATE
-                        SET
-                            i_replayed=sch_chameleon.t_replica_table_status.i_replayed+EXCLUDED.i_replayed,
-                            i_ddl=sch_chameleon.t_replica_table_status.i_ddl+EXCLUDED.i_ddl,
-                            t_binlog_name=EXCLUDED.t_binlog_name,
-                            i_binlog_position=EXCLUDED.i_binlog_position,
-                            ts_last_replayed=EXCLUDED.ts_last_replayed
-                    ;
-                END IF;
+
 
 
             EXCEPTION
@@ -663,6 +631,64 @@ $BODY$
                 END IF;
             END;
         END LOOP;
+        IF to_regclass('sch_chameleon.t_replica_table_status') IS NOT NULL
+        THEN
+            v_t_table_status_sql:=format('
+                INSERT INTO sch_chameleon.t_replica_table_status
+                    (
+                        i_id_source,
+                        v_schema_name,
+                        v_table_name,
+                        i_replayed,
+                        i_ddl,
+                        t_binlog_name,
+                        i_binlog_position,
+                        ts_last_replayed
+                    )
+                SELECT
+                    %L,
+                    log.v_schema_name,
+                    log.v_table_name,
+                    count(*) FILTER (WHERE log.enm_binlog_event <> ''ddl''),
+                    count(*) FILTER (WHERE log.enm_binlog_event = ''ddl''),
+                    (array_agg(
+                        log.t_binlog_name
+                        ORDER BY
+                            split_part(log.t_binlog_name,''.'',2)::bigint DESC,
+                            log.i_binlog_position DESC
+                    ))[1],
+                    (array_agg(
+                        log.i_binlog_position
+                        ORDER BY
+                            split_part(log.t_binlog_name,''.'',2)::bigint DESC,
+                            log.i_binlog_position DESC
+                    ))[1],
+                    clock_timestamp()
+                FROM
+                    sch_chameleon.%I log
+                    INNER JOIN sch_chameleon.t_replica_tables tab
+                        ON tab.i_id_source=%L
+                        AND tab.v_schema_name=log.v_schema_name
+                        AND tab.v_table_name=log.v_table_name
+                        AND tab.b_replica_enabled
+                WHERE
+                        log.i_id_batch=%L
+                    AND log.i_id_event=ANY(%L)
+                GROUP BY
+                    log.v_schema_name,
+                    log.v_table_name
+                ON CONFLICT (i_id_source, v_schema_name, v_table_name)
+                    DO UPDATE
+                    SET
+                        i_replayed=sch_chameleon.t_replica_table_status.i_replayed+EXCLUDED.i_replayed,
+                        i_ddl=sch_chameleon.t_replica_table_status.i_ddl+EXCLUDED.i_ddl,
+                        t_binlog_name=EXCLUDED.t_binlog_name,
+                        i_binlog_position=EXCLUDED.i_binlog_position,
+                        ts_last_replayed=EXCLUDED.ts_last_replayed
+                ;
+            ', p_i_id_source, v_v_log_table, p_i_id_source, v_i_id_batch, v_i_evt_replay);
+            EXECUTE v_t_table_status_sql;
+        END IF;
         IF v_ts_evt_source IS NOT NULL
         THEN
             UPDATE sch_chameleon.t_last_replayed

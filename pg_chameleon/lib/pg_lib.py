@@ -4499,6 +4499,21 @@ class pg_engine(object):
             ;
         """
         self.pgsql_cur.execute(sql_collect_events, (id_batch, ))
+        if self.pgsql_cur.rowcount == 0:
+            self.logger.debug("batch %s has no events, marking it as replayed" % (id_batch, ))
+            sql_mark_empty_replayed = """
+                UPDATE sch_chameleon.t_replica_batch
+                    SET
+                        b_replayed=True,
+                        i_replayed=0,
+                        i_skipped=0,
+                        i_ddl=0,
+                        ts_replayed=clock_timestamp()
+                WHERE
+                    i_id_batch=%s
+                ;
+            """
+            self.pgsql_cur.execute(sql_mark_empty_replayed, (id_batch, ))
 
 
     def __swap_enums(self):

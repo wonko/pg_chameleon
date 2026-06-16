@@ -1250,6 +1250,9 @@ class pg_engine(object):
             continue_loop = True
             self.source_config = self.sources[self.source]
             replay_max_rows = self.source_config["replay_max_rows"]
+            if self.log_replay_statements and replay_max_rows != 1:
+                self.logger.warning("Reducing replay_max_rows from %s to 1 while replay SQL logging is enabled." % (replay_max_rows, ))
+                replay_max_rows = 1
             exit_on_error = True if self.source_config["on_error_replay"]=='exit' else False
             self.ensure_table_status_catalog()
             while continue_loop:
@@ -1264,6 +1267,21 @@ class pg_engine(object):
                     self.pgsql_cur.execute("SET pg_chameleon.log_replay_statements = 'on';")
                 sql_replay = """SELECT * FROM sch_chameleon.fn_replay_mysql(%s,%s,%s);""";
                 replay_started = time.time()
+                replay_candidate = self.get_next_replay_candidate()
+                if replay_candidate:
+                    self.logger.debug(
+                        "Next replay candidate for source %s: batch %s, queued events %s, first event %s, first table %s.%s, first event position %s:%s"
+                        % (
+                            self.source,
+                            replay_candidate[0],
+                            replay_candidate[1],
+                            replay_candidate[2],
+                            replay_candidate[3],
+                            replay_candidate[4],
+                            replay_candidate[5],
+                            replay_candidate[6],
+                        )
+                    )
                 self.logger.debug("Calling fn_replay_mysql for source %s with max rows %s" % (self.source, replay_max_rows))
                 self.pgsql_cur.execute(sql_replay, (replay_max_rows, self.i_id_source, exit_on_error))
                 self.logger.debug("fn_replay_mysql for source %s returned in %.3f seconds" % (self.source, time.time() - replay_started))
@@ -1330,6 +1348,48 @@ class pg_engine(object):
             ;
         """
         self.pgsql_cur.execute(sql_backlog, (self.i_id_source, ))
+        return self.pgsql_cur.fetchone()
+
+    def get_next_replay_candidate(self):
+        """
+            The method returns the next replay batch and first queued event for diagnostics.
+        """
+        sql_candidate = """
+            WITH next_batch AS
+            (
+                SELECT
+                    bat.i_id_batch,
+                    evt.i_id_event,
+                    array_length(evt.i_id_event, 1) AS queued_events
+                FROM
+                    sch_chameleon.t_replica_batch bat
+                    INNER JOIN sch_chameleon.t_batch_events evt
+                        ON evt.i_id_batch=bat.i_id_batch
+                WHERE
+                        bat.b_started
+                    AND bat.b_processed
+                    AND NOT bat.b_replayed
+                    AND bat.i_id_source=%s
+                ORDER BY
+                    bat.ts_created
+                LIMIT 1
+            )
+            SELECT
+                next_batch.i_id_batch,
+                next_batch.queued_events,
+                next_batch.i_id_event[1] AS first_event,
+                log.v_schema_name,
+                log.v_table_name,
+                log.t_binlog_name,
+                log.i_binlog_position
+            FROM
+                next_batch
+                LEFT JOIN sch_chameleon.t_log_replica log
+                    ON log.i_id_batch=next_batch.i_id_batch
+                    AND log.i_id_event=next_batch.i_id_event[1]
+            ;
+        """
+        self.pgsql_cur.execute(sql_candidate, (self.i_id_source, ))
         return self.pgsql_cur.fetchone()
 
 

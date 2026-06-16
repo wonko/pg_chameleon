@@ -135,6 +135,8 @@ Source configuration parameters
 * lock_timeout the max time in seconds that the target postgresql connections should wait for acquiring a lock. This parameter applies  to init_replica,refresh_schema and sync_tables when performing the relation's swap.
 * my_server_id the server id for the mysql replica. must be unique within the replica cluster
 * replica_batch_size the max number of rows that are pulled from the mysql replica before a write on the postgresql database is performed. See caveats in README for a complete explanation.
+* replay_max_rows the max number of queued events replayed by one replay function call.
+* log_replay_max_rows the max number of queued events replayed by one replay function call when ``--log-replay-statements`` is enabled. The default value is ``100``.
 * batch_retention the max retention for the replayed batches rows in t_replica_batch. The field accepts any valid interval accepted by PostgreSQL
 * copy_max_memory the max amount of memory to use when copying the table in PostgreSQL. Is possible to specify the value in (k)ilobytes, (M)egabytes, (G)igabytes adding the suffix (e.g. 300M).
 * copy_parallel_workers the number of tables to copy in parallel during init_replica, refresh_schema and sync_tables. With keep_existing_schema the setting controls data copy workers; one separate worker restores indices and constraints for tables whose row copy finished. The default value is ``1`` which preserves sequential data copy behaviour.

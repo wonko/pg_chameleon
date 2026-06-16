@@ -1250,9 +1250,13 @@ class pg_engine(object):
             continue_loop = True
             self.source_config = self.sources[self.source]
             replay_max_rows = self.source_config["replay_max_rows"]
-            if self.log_replay_statements and replay_max_rows != 1:
-                self.logger.warning("Reducing replay_max_rows from %s to 1 while replay SQL logging is enabled." % (replay_max_rows, ))
-                replay_max_rows = 1
+            if self.log_replay_statements:
+                log_replay_max_rows = int(self.source_config.get("log_replay_max_rows", 100))
+                if log_replay_max_rows < 1:
+                    log_replay_max_rows = 1
+                if log_replay_max_rows < replay_max_rows:
+                    self.logger.warning("Reducing replay_max_rows from %s to %s while replay SQL logging is enabled." % (replay_max_rows, log_replay_max_rows))
+                    replay_max_rows = log_replay_max_rows
             exit_on_error = True if self.source_config["on_error_replay"]=='exit' else False
             self.ensure_table_status_catalog()
             while continue_loop:

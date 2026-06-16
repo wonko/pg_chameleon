@@ -542,6 +542,10 @@ class replica_engine(object):
         self.mysql_source.keep_existing_schema = keep_existing_schema
         self.mysql_source.logger  = log_read[0]
         self.pg_engine.logger  = log_read[0]
+        self.logger = log_read[0]
+        self.logger.debug("Read replica daemon starting for source %s" % (self.args.source, ))
+        self.mysql_source.pg_engine.disconnect_db()
+        self.pg_engine.disconnect_db()
         while True:
             try:
                 self.mysql_source.read_replica()
@@ -555,11 +559,15 @@ class replica_engine(object):
             The method replays the row images stored in the target postgresql database.
         """
         self.pg_engine.logger  = log_replay[0]
+        self.logger = log_replay[0]
         tables_error  = []
+        self.logger.debug("Replay replica daemon starting for source %s" % (self.args.source, ))
+        self.pg_engine.disconnect_db()
         self.pg_engine.connect_db()
         self.pg_engine.set_source_id()
         while True:
             try:
+                self.logger.debug("Replay replica daemon checking for work on source %s" % (self.args.source, ))
                 tables_error = self.pg_engine.replay_replica()
                 if len(tables_error) > 0:
                     table_list = [item for sublist in tables_error for item in sublist]
@@ -888,20 +896,23 @@ class replica_engine(object):
                 'Source table',
                 'Target table',
                 'Status',
-                'Replayed rows',
-                'Replayed DDL',
+                'Queue state',
+                'Tracked replay rows',
+                'Tracked replay DDL',
                 'Pending rows',
                 'Pending DDL',
-                'Last replayed position',
-                'Last replayed at',
-                'Latest pending position',
-                'Latest pending at',
-                'Init/sync position',
+                'Last tracked position',
+                'Last tracked at',
+                'Latest queued position',
+                'Latest queued at',
+                'Init/sync cutoff',
             ]
             tab_body = []
             for table_status_row in table_replay_status:
                 tab_body.append(list(table_status_row))
             print(tabulate(tab_body, headers=tab_headers, tablefmt="simple"))
+            print("\nTracked replay counters start from when the per-table status catalogue/function was installed or the table was last synced.")
+            print("Init/sync cutoff is the source coordinate used when the table was loaded; it is not the latest replay position.")
 
     def detach_replica(self):
         """

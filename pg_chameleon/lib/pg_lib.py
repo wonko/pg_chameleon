@@ -1263,7 +1263,10 @@ class pg_engine(object):
                     del self.pgsql_conn.notices[:]
                     self.pgsql_cur.execute("SET pg_chameleon.log_replay_statements = 'on';")
                 sql_replay = """SELECT * FROM sch_chameleon.fn_replay_mysql(%s,%s,%s);""";
+                replay_started = time.time()
+                self.logger.debug("Calling fn_replay_mysql for source %s with max rows %s" % (self.source, replay_max_rows))
                 self.pgsql_cur.execute(sql_replay, (replay_max_rows, self.i_id_source, exit_on_error))
+                self.logger.debug("fn_replay_mysql for source %s returned in %.3f seconds" % (self.source, time.time() - replay_started))
                 if self.log_replay_statements:
                     for notice in self.pgsql_conn.notices:
                         notice = notice.strip()
@@ -2817,6 +2820,15 @@ class pg_engine(object):
                         THEN 'enabled'
                         ELSE 'disabled'
                     END AS replica_status,
+                    CASE
+                        WHEN NOT tab.b_replica_enabled
+                        THEN 'disabled'
+                        WHEN COALESCE(pending.pending_rows, 0) + COALESCE(pending.pending_ddl, 0) > 0
+                        THEN 'pending'
+                        WHEN stat.ts_last_replayed IS NOT NULL
+                        THEN 'no queued events'
+                        ELSE 'no activity tracked'
+                    END AS queue_status,
                     COALESCE(stat.i_replayed, 0) AS replayed_rows,
                     COALESCE(stat.i_ddl, 0) AS replayed_ddl,
                     COALESCE(pending.pending_rows, 0) AS pending_rows,

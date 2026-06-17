@@ -43,6 +43,8 @@ class mysql_source(object):
         self.copy_table_data = True
         self.copy_parallel_workers = 1
         self.copy_exact_rowcount = False
+        self.copy_table_order = "size_desc"
+        self.copy_table_sizes = {}
         self.copy_table_total = 0
         self.copy_table_finished = 0
         self.copy_table_working = 0
@@ -64,6 +66,18 @@ class mysql_source(object):
             return "%sm %ss" % (minutes, seconds)
         else:
             return "%ss" % seconds
+
+    def __format_bytes(self, bytes_value):
+        """
+            The method formats bytes using a compact human readable value.
+        """
+        bytes_value = float(bytes_value)
+        for unit in ["B", "KiB", "MiB", "GiB", "TiB"]:
+            if bytes_value < 1024 or unit == "TiB":
+                if unit == "B":
+                    return "%s%s" % (int(bytes_value), unit)
+                return "%.1f%s" % (bytes_value, unit)
+            bytes_value = bytes_value/1024
 
 
     def __get_target_generated_columns(self, schema, table):
@@ -526,7 +540,8 @@ class mysql_source(object):
         """
         sql_tables="""
             SELECT
-                table_name as table_name
+                table_name as table_name,
+                coalesce(data_length,0)+coalesce(index_length,0) AS table_size
             FROM
                 information_schema.TABLES
             WHERE
@@ -536,7 +551,10 @@ class mysql_source(object):
         """
         for schema in self.schema_list:
             self.cursor_buffered.execute(sql_tables, (schema,))
-            table_list = [table["table_name"] for table in self.cursor_buffered.fetchall()]
+            table_data = self.cursor_buffered.fetchall()
+            table_list = [table["table_name"] for table in table_data]
+            for table in table_data:
+                self.copy_table_sizes[(schema, table["table_name"])] = int(table["table_size"] or 0)
             try:
                 limit_tables = self.limit_tables[schema]
                 if len(limit_tables) > 0:
@@ -1303,6 +1321,21 @@ class mysql_source(object):
         for schema in self.schema_tables:
             for table in self.schema_tables[schema]:
                 copy_jobs.append((schema, table))
+        if self.copy_table_order == "size_desc":
+            copy_jobs.sort(
+                key=lambda copy_job: self.copy_table_sizes.get(copy_job, 0),
+                reverse=True
+            )
+            if copy_jobs:
+                largest_jobs = [
+                    "%s.%s=%s" % (
+                        schema,
+                        table,
+                        self.__format_bytes(self.copy_table_sizes.get((schema, table), 0))
+                    )
+                    for schema, table in copy_jobs[:5]
+                ]
+                self.logger.info("Copy table order uses MySQL table size descending. Largest tables: %s" % ", ".join(largest_jobs))
         return copy_jobs
 
     def __copy_tables_parallel(self):
@@ -1455,6 +1488,10 @@ class mysql_source(object):
         if self.copy_parallel_workers < 1:
             self.copy_parallel_workers = 1
         self.copy_exact_rowcount = self.source_config.get("copy_exact_rowcount", False)
+        self.copy_table_order = self.source_config.get("copy_table_order", "size_desc")
+        if self.copy_table_order not in ["size_desc", "none"]:
+            self.logger.warning("Invalid copy_table_order %s. Falling back to size_desc." % self.copy_table_order)
+            self.copy_table_order = "size_desc"
         self.pg_engine.lock_timeout = self.source_config["lock_timeout"]
         self.pg_engine.grant_select_to = self.source_config["grant_select_to"]
 

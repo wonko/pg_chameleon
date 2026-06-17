@@ -53,6 +53,7 @@ sources:
     copy_max_memory: "300M"
     copy_parallel_workers: 1
     copy_exact_rowcount: No
+    copy_table_order: size_desc
     copy_mode: 'file'
     out_dir: /tmp
     sleep_loop: 1

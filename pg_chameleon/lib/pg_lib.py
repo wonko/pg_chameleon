@@ -3816,7 +3816,7 @@ class pg_engine(object):
                         sch_chameleon.t_replica_batch
                     WHERE
                             i_id_source=%s
-                        AND	b_started
+                        AND	b_replayed
 
                 ) bat,
                 hwm
@@ -3829,6 +3829,13 @@ class pg_engine(object):
         if source_consistent:
             if source_consistent[0]:
                 self.logger.info("The source: %s reached the consistent status" %(self.source, ) )
+                can_mark_consistent = True
+                if self.keep_existing_schema:
+                    self.__create_foreign_keys()
+                    can_mark_consistent = self.__validate_fkeys()
+                if not can_mark_consistent:
+                    self.logger.warning("The source: %s reached the replay high watermark but foreign key validation failed. Keeping the source inconsistent." %(self.source, ) )
+                    return
                 sql_set_source_consistent = """
                     UPDATE sch_chameleon.t_sources
                         SET
@@ -3851,8 +3858,6 @@ class pg_engine(object):
                 self.pgsql_cur.execute(sql_set_source_consistent, (self.i_id_source,  ))
                 self.pgsql_cur.execute(sql_set_tables_consistent, (self.i_id_source,  ))
                 if self.keep_existing_schema:
-                    self.__create_foreign_keys()
-                    self.__validate_fkeys()
                     self.__cleanup_idx_keys()
             else:
                 self.logger.debug("The source: %s is not consistent " %(self.source, ) )
@@ -4520,7 +4525,17 @@ class pg_engine(object):
         self.pgsql_cur.execute(sql_get_validate)
         fk_validate=self.pgsql_cur.fetchall()
         for fk in fk_validate:
-            self.pgsql_cur.execute(fk[0])
+            self.logger.info("Validating the foreign key %s on %s.%s" % (fk[2], fk[1], fk[3]))
+            try:
+                self.pgsql_cur.execute(fk[0])
+            except psycopg2.Error as fk_error:
+                self.logger.error(
+                    "Could not validate the foreign key %s on %s.%s. SQLCODE: %s SQLERROR: %s"
+                    % (fk[2], fk[1], fk[3], fk_error.pgcode, fk_error.pgerror)
+                )
+                self.pgsql_conn.rollback()
+                return False
+        return True
 
     def truncate_table(self, schema, table):
         """

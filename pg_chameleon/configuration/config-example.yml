@@ -54,6 +54,8 @@ sources:
     copy_parallel_workers: 1
     copy_exact_rowcount: No
     copy_table_order: size_desc
+    table_lock_wait_timeout: 1
+    table_lock_retry_seconds: 5
     copy_mode: 'file'
     out_dir: /tmp
     sleep_loop: 1

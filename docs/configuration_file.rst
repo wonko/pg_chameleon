@@ -142,6 +142,8 @@ Source configuration parameters
 * copy_parallel_workers the number of tables to copy in parallel during init_replica, refresh_schema and sync_tables. With keep_existing_schema the setting controls data copy workers; one separate worker restores indices and constraints for tables whose row copy finished. The default value is ``1`` which preserves sequential data copy behaviour.
 * copy_exact_rowcount when set to ``Yes`` the initial copy uses ``SELECT COUNT(*)`` to calculate progress slices instead of MySQL's estimated ``information_schema.TABLES.table_rows`` value. The default value is ``No``.
 * copy_table_order controls the order used to copy tables during init_replica, refresh_schema and sync_tables. The default value ``size_desc`` copies the largest MySQL tables first using ``information_schema.TABLES.DATA_LENGTH + INDEX_LENGTH``. Use ``none`` to preserve the catalogue order.
+* table_lock_wait_timeout sets the MySQL session ``lock_wait_timeout`` in seconds before taking the short ``LOCK TABLES ... READ`` lock used to collect copy coordinates. The default value is ``1``.
+* table_lock_retry_seconds sets the delay between source table lock attempts when ``lock_wait_timeout`` is reached. The default value is ``5``.
 * copy_mode the allowed values are ‘file’ and ‘direct’. With direct the copy happens on the fly. With file the table is first dumped in a csv file then reloaded in PostgreSQL.
 * out_dir the directory where the csv files are dumped during the init_replica process if the copy mode is file.
 * sleep_loop seconds between a two replica batches.

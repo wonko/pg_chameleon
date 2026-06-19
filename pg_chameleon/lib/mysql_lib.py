@@ -19,9 +19,11 @@ from pg_chameleon import sql_token
 from os import remove
 import re
 
-FTWRL_LOCK = Lock()
-FTWRL_LAST_UNLOCK = 0
-FTWRL_COOLDOWN_SECONDS = 5
+TABLE_LOCK_GATE = Lock()
+TABLE_LOCK_LAST_UNLOCK = 0
+TABLE_LOCK_COOLDOWN_SECONDS = 5
+TABLE_LOCK_WAIT_TIMEOUT = 1
+TABLE_LOCK_RETRY_SECONDS = 5
 
 class mysql_source(object):
     def __init__(self):
@@ -49,7 +51,9 @@ class mysql_source(object):
         self.copy_table_finished = 0
         self.copy_table_working = 0
         self.copy_table_lock = Lock()
-        self.ftwrl_lock_acquired = False
+        self.table_lock_gate_acquired = False
+        self.table_lock_wait_timeout = TABLE_LOCK_WAIT_TIMEOUT
+        self.table_lock_retry_seconds = TABLE_LOCK_RETRY_SECONDS
         self.generated_column_cache = {}
 
     def __format_seconds(self, seconds):
@@ -402,7 +406,7 @@ class mysql_source(object):
             self.conn_buffered.close()
         except:
             pass
-        self.__release_ftwrl_lock()
+        self.__release_table_lock_gate()
 
     def connect_db_unbuffered(self):
         """
@@ -829,39 +833,39 @@ class mysql_source(object):
         self.logger.debug("reading and discarding 1 row from `%s`.`%s`" % (schema, table))
         self.cursor_unbuffered.execute("SELECT * FROM `%s`.`%s` LIMIT 1" % (schema, table))
 
-    def __acquire_ftwrl_lock(self, schema, table):
+    def __acquire_table_lock_gate(self, schema, table):
         """
-            The method serialises FTWRL operations and applies a cooldown after
-            the previous lock was released.
+            The method serialises source table lock attempts and applies a
+            cooldown after the previous lock was released.
         """
-        global FTWRL_LAST_UNLOCK
+        global TABLE_LOCK_LAST_UNLOCK
 
-        self.logger.debug("waiting for FTWRL gate for `%s`.`%s`" % (schema, table))
-        FTWRL_LOCK.acquire()
-        self.ftwrl_lock_acquired = True
-        seconds_since_unlock = time.monotonic() - FTWRL_LAST_UNLOCK
-        if FTWRL_LAST_UNLOCK > 0 and seconds_since_unlock < FTWRL_COOLDOWN_SECONDS:
-            sleep_seconds = FTWRL_COOLDOWN_SECONDS - seconds_since_unlock
+        self.logger.debug("waiting for source table lock gate for `%s`.`%s`" % (schema, table))
+        TABLE_LOCK_GATE.acquire()
+        self.table_lock_gate_acquired = True
+        seconds_since_unlock = time.monotonic() - TABLE_LOCK_LAST_UNLOCK
+        if TABLE_LOCK_LAST_UNLOCK > 0 and seconds_since_unlock < TABLE_LOCK_COOLDOWN_SECONDS:
+            sleep_seconds = TABLE_LOCK_COOLDOWN_SECONDS - seconds_since_unlock
             self.logger.info(
-                "Waiting %.1f seconds before locking `%s`.`%s` with FTWRL"
+                "Waiting %.1f seconds before locking `%s`.`%s`"
                 % (sleep_seconds, schema, table)
             )
             time.sleep(sleep_seconds)
 
-    def __release_ftwrl_lock(self):
+    def __release_table_lock_gate(self):
         """
-            The method releases the shared FTWRL gate.
+            The method releases the shared source table lock gate.
         """
-        global FTWRL_LAST_UNLOCK
+        global TABLE_LOCK_LAST_UNLOCK
 
-        if self.ftwrl_lock_acquired:
-            FTWRL_LAST_UNLOCK = time.monotonic()
-            self.ftwrl_lock_acquired = False
-            FTWRL_LOCK.release()
+        if self.table_lock_gate_acquired:
+            TABLE_LOCK_LAST_UNLOCK = time.monotonic()
+            self.table_lock_gate_acquired = False
+            TABLE_LOCK_GATE.release()
 
     def lock_table(self, schema, table):
         """
-            The method flushes the given table with read lock.
+            The method locks the given table in read mode.
             The method assumes there is a database connection active.
 
             :param schema: the origin's schema
@@ -869,13 +873,29 @@ class mysql_source(object):
 
         """
         self.logger.debug("locking the table `%s`.`%s`" % (schema, table) )
-        sql_lock = "FLUSH TABLES `%s`.`%s` WITH READ LOCK;" %(schema, table)
+        sql_lock_timeout = "SET SESSION lock_wait_timeout = %s;"
+        sql_lock = "LOCK TABLES `%s`.`%s` READ;" %(schema, table)
         self.logger.debug("collecting the master's coordinates for table `%s`.`%s`" % (schema, table) )
-        self.__acquire_ftwrl_lock(schema, table)
+        self.__acquire_table_lock_gate(schema, table)
         try:
-            self.cursor_buffered.execute(sql_lock)
+            self.cursor_buffered.execute(sql_lock_timeout, (self.table_lock_wait_timeout,))
+            lock_attempt = 1
+            while True:
+                try:
+                    self.cursor_buffered.execute(sql_lock)
+                    break
+                except Exception as lock_error:
+                    error_code = lock_error.args[0] if lock_error.args else None
+                    if error_code not in (1205, 3572):
+                        raise
+                    self.logger.warning(
+                        "Could not acquire READ lock on `%s`.`%s` within %s second(s), retrying in %s second(s). Attempt %s. Error: %s"
+                        % (schema, table, self.table_lock_wait_timeout, self.table_lock_retry_seconds, lock_attempt, lock_error)
+                    )
+                    lock_attempt += 1
+                    time.sleep(self.table_lock_retry_seconds)
         except:
-            self.__release_ftwrl_lock()
+            self.__release_table_lock_gate()
             raise
 
     def unlock_tables(self):
@@ -887,7 +907,7 @@ class mysql_source(object):
         try:
             self.cursor_buffered.execute(sql_unlock)
         finally:
-            self.__release_ftwrl_lock()
+            self.__release_table_lock_gate()
 
     def get_master_coordinates(self):
         """
@@ -1217,6 +1237,8 @@ class mysql_source(object):
         worker.hexify = self.hexify
         worker.charset = self.charset
         worker.net_read_timeout = self.net_read_timeout
+        worker.table_lock_wait_timeout = self.table_lock_wait_timeout
+        worker.table_lock_retry_seconds = self.table_lock_retry_seconds
 
         worker.pg_engine = self.pg_engine.__class__()
         worker.pg_engine.dest_conn = self.pg_engine.dest_conn
@@ -1492,6 +1514,12 @@ class mysql_source(object):
         if self.copy_table_order not in ["size_desc", "none"]:
             self.logger.warning("Invalid copy_table_order %s. Falling back to size_desc." % self.copy_table_order)
             self.copy_table_order = "size_desc"
+        self.table_lock_wait_timeout = int(self.source_config.get("table_lock_wait_timeout", TABLE_LOCK_WAIT_TIMEOUT))
+        if self.table_lock_wait_timeout < 1:
+            self.table_lock_wait_timeout = TABLE_LOCK_WAIT_TIMEOUT
+        self.table_lock_retry_seconds = int(self.source_config.get("table_lock_retry_seconds", TABLE_LOCK_RETRY_SECONDS))
+        if self.table_lock_retry_seconds < 1:
+            self.table_lock_retry_seconds = TABLE_LOCK_RETRY_SECONDS
         self.pg_engine.lock_timeout = self.source_config["lock_timeout"]
         self.pg_engine.grant_select_to = self.source_config["grant_select_to"]
 

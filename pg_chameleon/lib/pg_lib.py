@@ -1288,9 +1288,12 @@ class pg_engine(object):
                         )
                     )
                     if self.log_replay_statements:
-                        replay_statement_preview = self.get_replay_statement_preview(replay_candidate[0], replay_candidate[2])
-                        if replay_statement_preview:
-                            self.logger.info("NEXT REPLAY SQL: %s" % replay_statement_preview)
+                        try:
+                            replay_statement_preview = self.get_replay_statement_preview(replay_candidate[0], replay_candidate[2])
+                            if replay_statement_preview:
+                                self.logger.info("NEXT REPLAY SQL: %s" % replay_statement_preview)
+                        except Exception as preview_error:
+                            self.logger.warning("Could not build replay SQL preview: %s" % preview_error)
                 self.logger.debug("Calling fn_replay_mysql for source %s with max rows %s" % (self.source, replay_max_rows))
                 self.pgsql_cur.execute(sql_replay, (replay_max_rows, self.i_id_source, exit_on_error))
                 self.logger.debug("fn_replay_mysql for source %s returned in %.3f seconds" % (self.source, time.time() - replay_started))
@@ -1411,6 +1414,8 @@ class pg_engine(object):
         """
             The method quotes an SQL literal using the active PostgreSQL cursor.
         """
+        if isinstance(value, (dict, list)):
+            value = json.dumps(value, cls=pg_encoder)
         return self.pgsql_cur.mogrify("%s", (value, )).decode()
 
     def __build_where_clause(self, pkey_columns, event_before, event_after):

@@ -2371,24 +2371,29 @@ class pg_engine(object):
 
         """
         sql_batch="""
-            WITH t_created AS
+            WITH t_next_batch AS
                 (
                     SELECT
-                        max(ts_created) AS ts_created
+                        i_id_batch
                     FROM
                         sch_chameleon.t_replica_batch
                     WHERE
                             NOT b_processed
                         AND	NOT b_replayed
                         AND	i_id_source=%s
+                    ORDER BY
+                        split_part(t_binlog_name,'.',2)::bigint,
+                        i_binlog_position,
+                        ts_created
+                    LIMIT 1
                 )
             UPDATE sch_chameleon.t_replica_batch
             SET
                 b_started=True
             FROM
-                t_created
+                t_next_batch
             WHERE
-                    t_replica_batch.ts_created=t_created.ts_created
+                    t_replica_batch.i_id_batch=t_next_batch.i_id_batch
                 AND	i_id_source=%s
             RETURNING
                 i_id_batch,
@@ -3835,6 +3840,9 @@ class pg_engine(object):
                     can_mark_consistent = self.__validate_fkeys()
                 if not can_mark_consistent:
                     self.logger.warning("The source: %s reached the replay high watermark but foreign key validation failed. Keeping the source inconsistent." %(self.source, ) )
+                    on_error_replay = self.sources.get(self.source, {}).get("on_error_replay", "exit")
+                    if on_error_replay == "exit":
+                        raise Exception("Foreign key validation failed while marking source %s consistent." % (self.source, ))
                     return
                 sql_set_source_consistent = """
                     UPDATE sch_chameleon.t_sources

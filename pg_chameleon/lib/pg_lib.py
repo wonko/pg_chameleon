@@ -2396,11 +2396,11 @@ class pg_engine(object):
                     t_replica_batch.i_id_batch=t_next_batch.i_id_batch
                 AND	i_id_source=%s
             RETURNING
-                i_id_batch,
-                t_binlog_name,
-                i_binlog_position,
-                v_log_table,
-                t_gtid_set
+                t_replica_batch.i_id_batch,
+                t_replica_batch.t_binlog_name,
+                t_replica_batch.i_binlog_position,
+                t_replica_batch.v_log_table,
+                t_replica_batch.t_gtid_set
 
             ;
         """

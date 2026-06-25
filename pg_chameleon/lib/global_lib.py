@@ -837,7 +837,7 @@ class replica_engine(object):
         table_status = configuration_data[2]
         replica_counters = configuration_data[3]
         table_replay_status = configuration_data[4]
-        tab_headers = ['Source id',  'Source name', 'Type',  'Status', 'Consistent' ,  'Read lag',  'Last read',  'Replay lag' , 'Last replay']
+        tab_headers = ['Source id',  'Source name', 'Type',  'Status', 'Consistent' ,  'Read lag',  'Last read', 'Read position',  'Replay lag' , 'Last replay', 'Replay position', 'High watermark']
         tab_body = []
         for status in configuration_status:
             source_id = status[0]
@@ -845,13 +845,16 @@ class replica_engine(object):
             source_status = status[2]
             read_lag = status[3]
             last_read = status[4]
-            replay_lag = status[5]
-            last_replay = status[6]
-            consistent = status[7]
-            source_type = status[8]
-            last_maintenance = status[9]
-            next_maintenance = status[10]
-            tab_row = [source_id, source_name, source_type,   source_status, consistent,  read_lag, last_read,  replay_lag, last_replay]
+            read_position = status[5]
+            replay_lag = status[6]
+            last_replay = status[7]
+            replay_position = status[8]
+            consistent = status[9]
+            source_type = status[10]
+            high_watermark = status[11]
+            last_maintenance = status[12]
+            next_maintenance = status[13]
+            tab_row = [source_id, source_name, source_type,   source_status, consistent,  read_lag, last_read, read_position,  replay_lag, last_replay, replay_position, high_watermark]
             tab_body.append(tab_row)
         print(tabulate(tab_body, headers=tab_headers, tablefmt="simple"))
         if schema_mappings:
@@ -899,6 +902,7 @@ class replica_engine(object):
                 'Target table',
                 'Status',
                 'Queue state',
+                'Table consistency',
                 'Tracked replay rows',
                 'Tracked replay DDL',
                 'Pending rows',
@@ -914,6 +918,7 @@ class replica_engine(object):
                 tab_body.append(list(table_status_row))
             print(tabulate(tab_body, headers=tab_headers, tablefmt="simple"))
             print("\nTracked replay counters start from when the per-table status catalogue/function was installed or the table was last synced.")
+            print("Table consistency is per-table: 'waiting for cutoff' means events before the init/sync cutoff are still being ignored for that table.")
             print("Init/sync cutoff is the source coordinate used when the table was loaded; it is not the latest replay position.")
 
     def detach_replica(self):

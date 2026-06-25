@@ -3014,6 +3014,11 @@ class pg_engine(object):
                         THEN 'no queued events'
                         ELSE 'no activity tracked'
                     END AS queue_status,
+                    CASE
+                        WHEN tab.t_binlog_name IS NOT NULL
+                        THEN 'waiting for cutoff'
+                        ELSE 'consistent'
+                    END AS table_consistency,
                     COALESCE(stat.i_replayed, 0) AS replayed_rows,
                     COALESCE(stat.i_ddl, 0) AS replayed_ddl,
                     COALESCE(pending.pending_rows, 0) AS pending_rows,
@@ -3073,6 +3078,7 @@ class pg_engine(object):
                         (date_trunc('seconds',now())-ts_last_received)::text
                 END AS receive_lag,
                 coalesce(rec.ts_last_received::text,''),
+                coalesce(read_pos.read_position, '') AS read_position,
 
                 CASE
                     WHEN rep.ts_last_replayed IS NULL
@@ -3082,6 +3088,7 @@ class pg_engine(object):
                         (rec.ts_last_received-rep.ts_last_replayed)::text
                 END AS replay_lag,
                 coalesce(rep.ts_last_replayed::text,''),
+                coalesce(replay_pos.replay_position, '') AS replay_position,
                 CASE
                     WHEN src.b_consistent
                     THEN
@@ -3090,6 +3097,11 @@ class pg_engine(object):
                         'No'
                 END as consistent_status,
                 enm_source_type,
+                CASE
+                    WHEN src.t_binlog_name IS NOT NULL
+                    THEN format('%%s:%%s', src.t_binlog_name, src.i_binlog_position)
+                    ELSE ''
+                END AS high_watermark,
                 coalesce(date_trunc('seconds',ts_last_maintenance)::text,'N/A') as last_maintenance,
                 coalesce(date_trunc('seconds',ts_last_maintenance+nullif(%%s,'disabled')::interval)::text,'N/A') AS next_maintenance
 
@@ -3100,6 +3112,37 @@ class pg_engine(object):
                 ON	src.i_id_source = rec.i_id_source
                 LEFT JOIN sch_chameleon.t_last_replayed rep
                 ON	src.i_id_source = rep.i_id_source
+                LEFT JOIN LATERAL
+                (
+                    SELECT
+                        format('%%s:%%s', bat.t_binlog_name, bat.i_binlog_position) AS read_position
+                    FROM
+                        sch_chameleon.t_replica_batch bat
+                    WHERE
+                            bat.i_id_source=src.i_id_source
+                        AND bat.t_binlog_name IS NOT NULL
+                        AND bat.i_binlog_position IS NOT NULL
+                    ORDER BY
+                        split_part(bat.t_binlog_name,'.',2)::bigint DESC,
+                        bat.i_binlog_position DESC
+                    LIMIT 1
+                ) read_pos ON true
+                LEFT JOIN LATERAL
+                (
+                    SELECT
+                        format('%%s:%%s', bat.t_binlog_name, bat.i_binlog_position) AS replay_position
+                    FROM
+                        sch_chameleon.t_replica_batch bat
+                    WHERE
+                            bat.i_id_source=src.i_id_source
+                        AND bat.b_replayed
+                        AND bat.t_binlog_name IS NOT NULL
+                        AND bat.i_binlog_position IS NOT NULL
+                    ORDER BY
+                        split_part(bat.t_binlog_name,'.',2)::bigint DESC,
+                        bat.i_binlog_position DESC
+                    LIMIT 1
+                ) replay_pos ON true
             %s
             ;
 
@@ -3800,9 +3843,26 @@ class pg_engine(object):
                             i_id_source=%s
                         AND	not b_consistent
 
+                ),
+                replay_backlog AS
+                (
+                    SELECT
+                        count(*) AS queued_batches
+                    FROM
+                        sch_chameleon.t_replica_batch bat_wait
+                        INNER JOIN sch_chameleon.t_batch_events evt
+                            ON evt.i_id_batch=bat_wait.i_id_batch
+                    WHERE
+                            bat_wait.i_id_source=%s
+                        AND bat_wait.b_started
+                        AND bat_wait.b_processed
+                        AND NOT bat_wait.b_replayed
                 )
             SELECT
                 CASE
+                    WHEN replay_backlog.queued_batches > 0
+                    THEN
+                        False
                     WHEN	bat.binlog_data[1]>hwm.i_binlog_sequence
                     THEN
                         True
@@ -3829,11 +3889,12 @@ class pg_engine(object):
                         AND	b_replayed
 
                 ) bat,
-                hwm
+                hwm,
+                replay_backlog
             ;
 
         """
-        self.pgsql_cur.execute(sql_check_consistent, (self.i_id_source, self.i_id_source, ))
+        self.pgsql_cur.execute(sql_check_consistent, (self.i_id_source, self.i_id_source, self.i_id_source, ))
         self.logger.debug("Checking consistent status for source: %s" %(self.source, ) )
         source_consistent = self.pgsql_cur.fetchone()
         if source_consistent:

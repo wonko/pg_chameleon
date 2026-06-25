@@ -3099,7 +3099,7 @@ class pg_engine(object):
                 enm_source_type,
                 CASE
                     WHEN src.t_binlog_name IS NOT NULL
-                    THEN format('%%s:%%s', src.t_binlog_name, src.i_binlog_position)
+                    THEN format('%%%%s:%%%%s', src.t_binlog_name, src.i_binlog_position)
                     ELSE ''
                 END AS high_watermark,
                 coalesce(date_trunc('seconds',ts_last_maintenance)::text,'N/A') as last_maintenance,
@@ -3115,7 +3115,7 @@ class pg_engine(object):
                 LEFT JOIN LATERAL
                 (
                     SELECT
-                        format('%%s:%%s', bat.t_binlog_name, bat.i_binlog_position) AS read_position
+                        format('%%%%s:%%%%s', bat.t_binlog_name, bat.i_binlog_position) AS read_position
                     FROM
                         sch_chameleon.t_replica_batch bat
                     WHERE
@@ -3130,7 +3130,7 @@ class pg_engine(object):
                 LEFT JOIN LATERAL
                 (
                     SELECT
-                        format('%%s:%%s', bat.t_binlog_name, bat.i_binlog_position) AS replay_position
+                        format('%%%%s:%%%%s', bat.t_binlog_name, bat.i_binlog_position) AS replay_position
                     FROM
                         sch_chameleon.t_replica_batch bat
                     WHERE

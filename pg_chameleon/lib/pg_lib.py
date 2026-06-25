@@ -1295,6 +1295,7 @@ class pg_engine(object):
                         except Exception as preview_error:
                             self.logger.warning("Could not build replay SQL preview: %s" % preview_error)
                 self.logger.debug("Calling fn_replay_mysql for source %s with max rows %s" % (self.source, replay_max_rows))
+                del self.pgsql_conn.notices[:]
                 self.pgsql_cur.execute(sql_replay, (replay_max_rows, self.i_id_source, exit_on_error))
                 self.logger.debug("fn_replay_mysql for source %s returned in %.3f seconds" % (self.source, time.time() - replay_started))
                 if self.log_replay_statements:
@@ -1325,6 +1326,12 @@ class pg_engine(object):
                 continue_loop = replay_status[0]
                 function_error = replay_status[1]
                 if function_error:
+                    for notice in self.pgsql_conn.notices:
+                        self.logger.error(notice.strip())
+                    del self.pgsql_conn.notices[:]
+                    if replay_status[2]:
+                        self.logger.error("Replay function error details: %s" % replay_status[2])
+                        raise Exception('The replay process crashed: %s' % replay_status[2])
                     raise Exception('The replay process crashed')
                 if replay_status[2]:
                     tables_error.append(replay_status[2])

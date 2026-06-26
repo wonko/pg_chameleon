@@ -562,7 +562,22 @@ class replica_engine(object):
             keep_existing_schema = self.config["sources"][self.args.source]["keep_existing_schema"]
         else:
             keep_existing_schema = False
+        if "validate_foreign_keys_after_copy" in self.config["sources"][self.args.source]:
+            validate_foreign_keys_after_copy = self.config["sources"][self.args.source]["validate_foreign_keys_after_copy"]
+        else:
+            validate_foreign_keys_after_copy = True
+        if "foreign_key_validation" in self.config["sources"][self.args.source]:
+            foreign_key_validation = self.config["sources"][self.args.source]["foreign_key_validation"]
+        elif validate_foreign_keys_after_copy:
+            foreign_key_validation = "strict"
+        else:
+            foreign_key_validation = "skip"
+        foreign_key_validation = str(foreign_key_validation).lower().replace("-", "_")
+        if foreign_key_validation not in ["strict", "best_effort", "skip"]:
+            foreign_key_validation = "strict"
         self.pg_engine.keep_existing_schema = keep_existing_schema
+        self.pg_engine.validate_foreign_keys_after_copy = validate_foreign_keys_after_copy
+        self.pg_engine.foreign_key_validation = foreign_key_validation
         self.pg_engine.logger  = log_replay[0]
         self.logger = log_replay[0]
         tables_error  = []

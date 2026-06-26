@@ -593,6 +593,8 @@ class pg_engine(object):
         self.idx_sequence = 0
         self.lock_timeout = 0
         self.keep_existing_schema=False
+        self.validate_foreign_keys_after_copy=True
+        self.foreign_key_validation="strict"
         self.log_replay_statements=False
         self.log_replay_statements_checked=False
         self.migrations = [
@@ -3991,12 +3993,24 @@ class pg_engine(object):
         source_consistent = self.pgsql_cur.fetchone()
         if source_consistent:
             if source_consistent[0]:
-                self.logger.info("The source: %s reached the consistent status. Replay is paused while foreign keys are created and validated." %(self.source, ) )
+                self.logger.info("The source: %s reached the consistent status. Replay is paused while foreign keys are created." %(self.source, ) )
                 can_mark_consistent = True
                 if self.keep_existing_schema:
-                    self.logger.info("Creating and validating foreign keys for source %s" %(self.source, ) )
+                    foreign_key_validation = getattr(self, "foreign_key_validation", "strict")
+                    self.logger.info("Creating foreign keys for source %s" %(self.source, ) )
                     self.__create_foreign_keys()
-                    can_mark_consistent = self.__validate_fkeys()
+                    if foreign_key_validation == "strict":
+                        self.logger.info("Validating foreign keys for source %s" %(self.source, ) )
+                        can_mark_consistent = self.__validate_fkeys(strict=True)
+                    elif foreign_key_validation == "best_effort":
+                        self.logger.info("Validating foreign keys for source %s using best effort mode" %(self.source, ) )
+                        can_mark_consistent = self.__validate_fkeys(strict=False)
+                    else:
+                        self.logger.warning(
+                            "Skipping validation for foreign keys on source %s because foreign_key_validation is set to skip. "
+                            "Foreign keys remain NOT VALID; existing orphan rows may remain."
+                            % (self.source, )
+                        )
                 if not can_mark_consistent:
                     self.logger.warning("The source: %s reached the replay high watermark but foreign key validation failed. Keeping the source inconsistent." %(self.source, ) )
                     on_error_replay = self.sources.get(self.source, {}).get("on_error_replay", "exit")
@@ -4663,7 +4677,7 @@ class pg_engine(object):
         self.logger.info("Collecting foreign keys for the table %s.%s" % (schema, table,))
         self.pgsql_cur.execute(sql_fkeys,(schema,table,schema,table,schema,table,))
 
-    def __validate_fkeys(self):
+    def __validate_fkeys(self, strict=True):
         """
             The method tries to validate all the invalid foreign keys in the database
         """
@@ -4691,17 +4705,24 @@ class pg_engine(object):
         """
         self.pgsql_cur.execute(sql_get_validate)
         fk_validate=self.pgsql_cur.fetchall()
+        validation_failed = False
         for fk in fk_validate:
             self.logger.info("Validating the foreign key %s on %s.%s" % (fk[2], fk[1], fk[3]))
             try:
                 self.pgsql_cur.execute(fk[0])
+                if not self.pgsql_conn.autocommit:
+                    self.pgsql_conn.commit()
             except psycopg2.Error as fk_error:
+                validation_failed = True
                 self.logger.error(
                     "Could not validate the foreign key %s on %s.%s. SQLCODE: %s SQLERROR: %s"
                     % (fk[2], fk[1], fk[3], fk_error.pgcode, fk_error.pgerror)
                 )
                 self.pgsql_conn.rollback()
-                return False
+                if strict:
+                    return False
+        if validation_failed:
+            self.logger.warning("Some foreign keys could not be validated and remain NOT VALID.")
         return True
 
     def truncate_table(self, schema, table):

@@ -71,6 +71,7 @@ sources:
         - delphis_mediterranea  # skips deletes on schema delphis_mediterranea
       update:
     keep_existing_schema: No
+    foreign_key_validation: strict  # strict, best_effort, skip
     net_read_timeout: 600
     mysql_copy_driver: mysql_connector
     mysql_connector_use_pure: No

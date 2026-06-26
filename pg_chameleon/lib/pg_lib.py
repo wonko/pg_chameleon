@@ -1342,6 +1342,10 @@ class pg_engine(object):
                     raise Exception('The replay process crashed')
                 if replay_status[2]:
                     tables_error.append(replay_status[2])
+                self.clear_consistent_tables_by_replay_position()
+                if not continue_loop:
+                    self.logger.debug("Replay is idle for source %s; checking source consistency and foreign keys." % (self.source, ))
+                    self.check_source_consistent()
         return tables_error
 
     def get_replay_backlog(self):
@@ -1417,6 +1421,80 @@ class pg_engine(object):
         """
         self.pgsql_cur.execute(sql_candidate, (self.i_id_source, ))
         return self.pgsql_cur.fetchone()
+
+    def clear_consistent_tables_by_replay_position(self):
+        """
+            The method clears per-table init/sync cutoffs whose coordinates are
+            at or behind the latest replayed batch coordinate.
+
+            This handles quiet tables which receive no row/DDL events after
+            their cutoff and therefore never trigger the row-event based
+            consistency check in the read daemon.
+        """
+        sql_clear = """
+            WITH replay_position AS
+            (
+                SELECT
+                    max(
+                        array[
+                            split_part(t_binlog_name,'.',2)::bigint,
+                            i_binlog_position
+                        ]
+                    ) AS binlog_data
+                FROM
+                    sch_chameleon.t_replica_batch
+                WHERE
+                        i_id_source=%s
+                    AND b_replayed
+                    AND t_binlog_name IS NOT NULL
+                    AND i_binlog_position IS NOT NULL
+            ),
+            consistent_tables AS
+            (
+                SELECT
+                    tab.i_id_source,
+                    tab.v_schema_name,
+                    tab.v_table_name,
+                    format('%%I.%%I', tab.v_schema_name, tab.v_table_name) AS table_name,
+                    format('%%s:%%s', tab.t_binlog_name, tab.i_binlog_position) AS cutoff_position
+                FROM
+                    sch_chameleon.t_replica_tables tab,
+                    replay_position
+                WHERE
+                        tab.i_id_source=%s
+                    AND tab.t_binlog_name IS NOT NULL
+                    AND tab.i_binlog_position IS NOT NULL
+                    AND replay_position.binlog_data IS NOT NULL
+                    AND (
+                            split_part(tab.t_binlog_name,'.',2)::bigint < replay_position.binlog_data[1]
+                        OR (
+                                split_part(tab.t_binlog_name,'.',2)::bigint = replay_position.binlog_data[1]
+                            AND tab.i_binlog_position <= replay_position.binlog_data[2]
+                        )
+                    )
+            )
+            UPDATE sch_chameleon.t_replica_tables tab
+                SET
+                    t_binlog_name=NULL,
+                    i_binlog_position=NULL
+            FROM
+                consistent_tables ct
+            WHERE
+                    tab.i_id_source=ct.i_id_source
+                AND tab.v_schema_name=ct.v_schema_name
+                AND tab.v_table_name=ct.v_table_name
+            RETURNING
+                ct.table_name,
+                ct.cutoff_position
+            ;
+        """
+        self.pgsql_cur.execute(sql_clear, (self.i_id_source, self.i_id_source, ))
+        consistent_tables = self.pgsql_cur.fetchall()
+        for consistent_table in consistent_tables:
+            self.logger.info(
+                "Initial-copy cutoff reached for table %s at %s by replay progress"
+                % (consistent_table[0], consistent_table[1])
+            )
 
     def __quote_identifier(self, identifier):
         """
@@ -3913,9 +3991,10 @@ class pg_engine(object):
         source_consistent = self.pgsql_cur.fetchone()
         if source_consistent:
             if source_consistent[0]:
-                self.logger.info("The source: %s reached the consistent status" %(self.source, ) )
+                self.logger.info("The source: %s reached the consistent status. Replay is paused while foreign keys are created and validated." %(self.source, ) )
                 can_mark_consistent = True
                 if self.keep_existing_schema:
+                    self.logger.info("Creating and validating foreign keys for source %s" %(self.source, ) )
                     self.__create_foreign_keys()
                     can_mark_consistent = self.__validate_fkeys()
                 if not can_mark_consistent:

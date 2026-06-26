@@ -2163,7 +2163,6 @@ class mysql_source(object):
                     master_status = self.get_master_coordinates()
                     self.pg_engine.ensure_open_batch(master_status)
                 self.pg_engine.keep_existing_schema = self.keep_existing_schema
-                self.pg_engine.check_source_consistent()
 
 
             self.disconnect_db_buffered()

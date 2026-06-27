@@ -342,6 +342,7 @@ $BODY$
         v_tab_enabled   boolean;
         v_r_batch record;
         v_i_missing_events bigint[];
+        v_i_affected_rows integer;
 
     BEGIN
         v_i_replayed:=0;
@@ -664,6 +665,16 @@ $BODY$
 
                 END IF;
                 EXECUTE v_r_statements.t_sql;
+                GET DIAGNOSTICS v_i_affected_rows = ROW_COUNT;
+                IF v_r_statements.enm_binlog_event IN ('update','delete') AND v_i_affected_rows=0
+                THEN
+                    RAISE EXCEPTION 'Replay statement affected zero rows for %.% at %:%: %',
+                        v_r_statements.v_schema_name,
+                        v_r_statements.v_table_name,
+                        v_r_statements.t_binlog_name,
+                        v_r_statements.i_binlog_position,
+                        v_r_statements.t_sql;
+                END IF;
                 v_i_ddl:=v_i_ddl+v_r_statements.i_ddl;
                 v_i_replayed:=v_i_replayed+v_r_statements.i_replay;
 

@@ -1263,6 +1263,9 @@ class pg_engine(object):
             exit_on_error = True if self.source_config["on_error_replay"]=='exit' else False
             self.ensure_table_status_catalog()
             while continue_loop:
+                repaired_batches = self.repair_replayed_batches_with_retained_logs()
+                if repaired_batches > 0:
+                    continue_loop = True
                 if self.log_replay_statements:
                     if not self.log_replay_statements_checked:
                         self.pgsql_cur.execute("SELECT pg_get_functiondef('sch_chameleon.fn_replay_mysql(integer,integer,boolean)'::regprocedure) LIKE %s;", ('%REPLAY SQL:%',))
@@ -1307,12 +1310,11 @@ class pg_engine(object):
                     self.pgsql_conn.rollback()
                     raise
                 self.logger.debug("fn_replay_mysql for source %s returned in %.3f seconds" % (self.source, time.time() - replay_started))
-                if self.log_replay_statements:
-                    for notice in self.pgsql_conn.notices:
-                        notice = notice.strip()
-                        if "REPLAY SQL:" in notice:
-                            self.logger.info(notice)
-                    del self.pgsql_conn.notices[:]
+                for notice in self.pgsql_conn.notices:
+                    notice = notice.strip()
+                    if self.log_replay_statements or "REPLAY SQL:" not in notice:
+                        self.logger.info(notice)
+                del self.pgsql_conn.notices[:]
                 replay_status = self.pgsql_cur.fetchone()
                 if replay_status[0]:
                     self.logger.info("Replayed at most %s rows for source %s" % (replay_max_rows, self.source) )
@@ -1345,6 +1347,9 @@ class pg_engine(object):
                 if replay_status[2]:
                     tables_error.append(replay_status[2])
                 self.clear_consistent_tables_by_replay_position()
+                repaired_batches = self.repair_replayed_batches_with_retained_logs()
+                if repaired_batches > 0:
+                    continue_loop = True
                 if not continue_loop:
                     self.logger.debug("Replay is idle for source %s; checking source consistency and foreign keys." % (self.source, ))
                     self.check_source_consistent()
@@ -1423,6 +1428,89 @@ class pg_engine(object):
         """
         self.pgsql_cur.execute(sql_candidate, (self.i_id_source, ))
         return self.pgsql_cur.fetchone()
+
+    def repair_replayed_batches_with_retained_logs(self):
+        """
+            The method requeues batches marked as replayed while their log rows
+            are still retained. This prevents FK creation from running before
+            previously misclassified batches have really been replayed.
+        """
+        sql_log_tables = """
+            SELECT
+                unnest(v_log_table)
+            FROM
+                sch_chameleon.t_sources
+            WHERE
+                i_id_source=%s
+            ;
+        """
+        self.pgsql_cur.execute(sql_log_tables, (self.i_id_source, ))
+        log_tables = self.pgsql_cur.fetchall()
+        repaired_batches = 0
+        for log_table in log_tables:
+            log_table_name = log_table[0]
+            sql_repair = sql.SQL("""
+                WITH retained_batches AS
+                (
+                    SELECT
+                        bat.i_id_batch,
+                        array_agg(log.i_id_event ORDER BY log.i_id_event) AS i_id_event
+                    FROM
+                        sch_chameleon.t_replica_batch bat
+                        INNER JOIN sch_chameleon.{} log
+                            ON log.i_id_batch=bat.i_id_batch
+                    WHERE
+                            bat.i_id_source=%s
+                        AND bat.b_started
+                        AND bat.b_processed
+                        AND bat.b_replayed
+                        AND bat.v_log_table=%s
+                    GROUP BY
+                        bat.i_id_batch
+                ),
+                queued_batches AS
+                (
+                    INSERT INTO sch_chameleon.t_batch_events
+                        (
+                            i_id_batch,
+                            i_id_event
+                        )
+                    SELECT
+                        i_id_batch,
+                        i_id_event
+                    FROM
+                        retained_batches
+                    ON CONFLICT (i_id_batch)
+                    DO UPDATE
+                        SET
+                            i_id_event=EXCLUDED.i_id_event
+                    RETURNING
+                        i_id_batch
+                )
+                UPDATE sch_chameleon.t_replica_batch bat
+                    SET
+                        b_replayed=False,
+                        i_replayed=NULL,
+                        i_skipped=NULL,
+                        i_ddl=NULL,
+                        ts_replayed=NULL
+                FROM
+                    queued_batches queued
+                WHERE
+                    bat.i_id_batch=queued.i_id_batch
+                RETURNING
+                    bat.i_id_batch
+                ;
+            """).format(sql.Identifier(log_table_name))
+            self.pgsql_cur.execute(sql_repair, (self.i_id_source, log_table_name, ))
+            repaired = self.pgsql_cur.fetchall()
+            for repaired_batch in repaired:
+                self.logger.warning(
+                    "Requeued replayed batch %s because retained log rows still exist in %s"
+                    % (repaired_batch[0], log_table_name)
+                )
+            repaired_batches += len(repaired)
+        return repaired_batches
 
     def clear_consistent_tables_by_replay_position(self):
         """

@@ -4463,7 +4463,7 @@ class pg_engine(object):
             FROM
                 sch_chameleon.t_fkeys
             ;
-            """
+        """
         self.pgsql_cur.execute(sql_get_fk_create)
         fk_create=self.pgsql_cur.fetchall()
         for fk in fk_create:

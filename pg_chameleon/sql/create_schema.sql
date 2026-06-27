@@ -340,6 +340,8 @@ $BODY$
         v_i_evt_queue   bigint[];
         v_ts_evt_source   timestamp without time zone;
         v_tab_enabled   boolean;
+        v_r_batch record;
+        v_i_missing_events bigint[];
 
     BEGIN
         v_i_replayed:=0;
@@ -347,28 +349,90 @@ $BODY$
         v_i_skipped:=0;
         v_ty_status.b_continue:=FALSE;
         v_ty_status.b_error:=FALSE;
-        UPDATE ONLY sch_chameleon.t_replica_batch bat
-            SET
-                b_replayed=True,
-                i_replayed=0,
-                i_skipped=0,
-                i_ddl=0,
-                ts_replayed=clock_timestamp()
-        WHERE
-                bat.b_started
-            AND bat.b_processed
-            AND NOT bat.b_replayed
-            AND bat.i_id_source=p_i_id_source
-            AND NOT EXISTS
-                (
-                    SELECT
-                        1
-                    FROM
-                        sch_chameleon.t_batch_events evt
-                    WHERE
-                        evt.i_id_batch=bat.i_id_batch
+        FOR v_r_batch IN
+            SELECT
+                bat.i_id_batch,
+                bat.v_log_table,
+                bat.b_replayed
+            FROM
+                sch_chameleon.t_replica_batch bat
+            WHERE
+                    bat.b_started
+                AND bat.b_processed
+                AND bat.i_id_source=p_i_id_source
+                AND (
+                        (
+                            NOT bat.b_replayed
+                        AND NOT EXISTS
+                            (
+                                SELECT
+                                    1
+                                FROM
+                                    sch_chameleon.t_batch_events evt
+                                WHERE
+                                    evt.i_id_batch=bat.i_id_batch
+                            )
+                        )
+                    OR (
+                            bat.b_replayed
+                        AND coalesce(bat.i_replayed,0)=0
+                        AND coalesce(bat.i_skipped,0)=0
+                        AND coalesce(bat.i_ddl,0)=0
+                    )
                 )
-        ;
+            ORDER BY
+                bat.ts_created
+        LOOP
+            EXECUTE format(
+                'SELECT array_agg(i_id_event ORDER BY i_id_event) FROM sch_chameleon.%I WHERE i_id_batch=%L',
+                v_r_batch.v_log_table,
+                v_r_batch.i_id_batch
+            )
+            INTO v_i_missing_events;
+            IF v_i_missing_events IS NULL
+            THEN
+                IF NOT v_r_batch.b_replayed
+                THEN
+                    UPDATE ONLY sch_chameleon.t_replica_batch
+                        SET
+                            b_replayed=True,
+                            i_replayed=0,
+                            i_skipped=0,
+                            i_ddl=0,
+                            ts_replayed=clock_timestamp()
+                    WHERE
+                        i_id_batch=v_r_batch.i_id_batch
+                    ;
+                END IF;
+            ELSE
+                INSERT INTO sch_chameleon.t_batch_events
+                    (
+                        i_id_batch,
+                        i_id_event
+                    )
+                VALUES
+                    (
+                        v_r_batch.i_id_batch,
+                        v_i_missing_events
+                    )
+                ON CONFLICT (i_id_batch)
+                DO UPDATE
+                    SET
+                        i_id_event=EXCLUDED.i_id_event
+                ;
+                UPDATE ONLY sch_chameleon.t_replica_batch
+                    SET
+                        b_replayed=False,
+                        i_replayed=NULL,
+                        i_skipped=NULL,
+                        i_ddl=NULL,
+                        ts_replayed=NULL
+                WHERE
+                    i_id_batch=v_r_batch.i_id_batch
+                ;
+                RAISE WARNING 'Rebuilt missing replay event queue for batch % from log table %', v_r_batch.i_id_batch, v_r_batch.v_log_table;
+            END IF;
+        END LOOP;
         RAISE DEBUG 'Searching batches to replay for source id: %', p_i_id_source;
         v_i_id_batch:= (
             SELECT

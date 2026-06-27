@@ -4985,17 +4985,6 @@ class pg_engine(object):
 
             :param id_batch: the id batch to set as processed
         """
-        self.logger.debug("updating batch %s to processed" % (id_batch, ))
-        sql_update="""
-            UPDATE sch_chameleon.t_replica_batch
-                SET
-                    b_processed=True,
-                    ts_processed=now()
-            WHERE
-                i_id_batch=%s
-            ;
-        """
-        self.pgsql_cur.execute(sql_update, (id_batch, ))
         self.logger.debug("collecting events id for batch %s " % (id_batch, ))
         sql_collect_events = """
             INSERT INTO
@@ -5020,14 +5009,31 @@ class pg_engine(object):
             ) t_event
             GROUP BY
                     i_id_batch
+            ON CONFLICT (i_id_batch)
+            DO UPDATE
+                SET
+                    i_id_event=EXCLUDED.i_id_event
             ;
         """
         self.pgsql_cur.execute(sql_collect_events, (id_batch, ))
-        if self.pgsql_cur.rowcount == 0:
+        collected_events = self.pgsql_cur.rowcount
+        self.logger.debug("updating batch %s to processed" % (id_batch, ))
+        sql_update="""
+            UPDATE sch_chameleon.t_replica_batch
+                SET
+                    b_processed=True,
+                    ts_processed=now()
+            WHERE
+                i_id_batch=%s
+            ;
+        """
+        self.pgsql_cur.execute(sql_update, (id_batch, ))
+        if collected_events == 0:
             self.logger.debug("batch %s has no events, marking it as replayed" % (id_batch, ))
             sql_mark_empty_replayed = """
                 UPDATE sch_chameleon.t_replica_batch
                     SET
+                        b_processed=True,
                         b_replayed=True,
                         i_replayed=0,
                         i_skipped=0,

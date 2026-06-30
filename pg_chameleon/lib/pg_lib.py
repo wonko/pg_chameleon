@@ -3374,7 +3374,7 @@ class pg_engine(object):
         table_states = self.pgsql_cur.fetchall()
         self.logger.info("AUDIT replay_start source=%s tables=%s" % (self.source, len(table_states)))
         for table_state in table_states:
-            self.logger.info(
+            self.logger.debug(
                 "AUDIT replay_start_table table=%s.%s enabled=%s cutoff=%s replayed_rows=%s last_replayed=%s"
                 % (table_state[0], table_state[1], table_state[2], table_state[3], table_state[4], table_state[5])
             )
@@ -5201,7 +5201,7 @@ class pg_engine(object):
             ;
         """
         self.pgsql_cur.execute(sql_update, (id_batch, ))
-        self.logger.info("AUDIT read_batch_processed batch=%s queued=%s" % (id_batch, collected_events))
+        self.logger.debug("AUDIT read_batch_processed batch=%s queued=%s" % (id_batch, collected_events))
         if collected_events == 0:
             self.logger.debug("batch %s has no events, marking it as replayed" % (id_batch, ))
             sql_mark_empty_replayed = """

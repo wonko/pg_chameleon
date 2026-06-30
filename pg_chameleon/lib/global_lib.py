@@ -373,12 +373,18 @@ class replica_engine(object):
             elif source_type  == "pgsql":
                 self.__init_pgsql_replica()
 
+    def __foreground_requested(self):
+        """
+            Returns true when the command should stay attached to the current terminal.
+        """
+        return self.args.debug or getattr(self.args, "foreground", False)
+
     def __init_mysql_replica(self):
         """
             The method  initialise a replica for a given mysql source within the specified configuration.
             The method is called by the public method init_replica.
         """
-        if self.args.debug:
+        if self.__foreground_requested():
             self.mysql_source.init_replica()
         else:
             if self.config["log_dest"]  == 'stdout':
@@ -398,7 +404,7 @@ class replica_engine(object):
             The method is called by the public method init_replica.
         """
 
-        if self.args.debug:
+        if self.__foreground_requested():
             self.pgsql_source.init_replica()
         else:
             if self.config["log_dest"]  == 'stdout':
@@ -425,7 +431,7 @@ class replica_engine(object):
             print("You must specify an origin's schema name using the argument --schema")
         else:
             self.__stop_replica()
-            if self.args.debug:
+            if self.__foreground_requested():
                 self.mysql_source.refresh_schema()
             else:
                 if self.config["log_dest"]  == 'stdout':
@@ -452,7 +458,7 @@ class replica_engine(object):
             print("You must specify one or more tables, in the form schema.table, separated by comma using the argument --tables")
         else:
             self.__stop_replica()
-            if self.args.debug:
+            if self.__foreground_requested():
                 self.mysql_source.sync_tables()
             else:
                 if self.config["log_dest"]  == 'stdout':
@@ -627,7 +633,7 @@ class replica_engine(object):
         signal.signal(signal.SIGINT, self.terminate_replica)
         queue = mp.Queue()
         self.sleep_loop = self.config["sources"][self.args.source]["sleep_loop"]
-        if self.args.debug:
+        if self.__foreground_requested():
             check_timeout = self.sleep_loop
         else:
             check_timeout = self.sleep_loop*10
@@ -703,7 +709,7 @@ class replica_engine(object):
                 print("chameleon.py enable_replica --config %s --source %s " % (self.args.config, self.args.source))
 
             else:
-                self.logger.info("Cleaning not processed batches for source %s" % (self.args.source))
+                self.logger.debug("Cleaning not processed batches for source %s" % (self.args.source))
                 self.pg_engine.clean_not_processed_batches()
                 self.pg_engine.ensure_log_replica_indexes()
                 self.pg_engine.restore_stored_idx_cons()
@@ -742,7 +748,7 @@ class replica_engine(object):
                     self.pg_engine.clean_unreplayed_batches()
                     self.pg_engine.ensure_open_batch(master_status)
                 self.pg_engine.disconnect_db()
-                if self.args.debug:
+                if self.__foreground_requested():
                     self.__run_replica()
                 else:
                     if self.config["log_dest"]  == 'stdout':
@@ -978,7 +984,7 @@ class replica_engine(object):
         if self.args.source == "*":
             print("You must specify a source name with the argument --source")
         else:
-            if self.args.debug:
+            if self.__foreground_requested():
                 self.pg_engine.run_maintenance()
             else:
                 if self.config["log_dest"]  == 'stdout':
@@ -1015,6 +1021,7 @@ class replica_engine(object):
         config_name = self.args.config
         source_name = self.args.source
         debug_mode = self.args.debug
+        foreground_mode = getattr(self.args, "foreground", False)
         if source_name == '*':
             log_name = "%s_general" % (config_name)
         elif  logger_name == "global":
@@ -1032,7 +1039,7 @@ class replica_engine(object):
             str_format = "%(asctime)s %(processName)s %(levelname)s: %(message)s"
         formatter = logging.Formatter(str_format, "%Y-%m-%d %H:%M:%S")
 
-        if log_dest=='stdout' or debug_mode:
+        if log_dest=='stdout' or debug_mode or foreground_mode:
             fh=logging.StreamHandler(sys.stdout)
 
         elif log_dest=='file':

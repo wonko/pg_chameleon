@@ -585,6 +585,7 @@ class replica_engine(object):
         self.pg_engine.disconnect_db()
         self.pg_engine.connect_db()
         self.pg_engine.set_source_id()
+        self.pg_engine.log_replay_start_audit()
         while True:
             try:
                 self.logger.debug("Replay replica daemon checking for work on source %s" % (self.args.source, ))

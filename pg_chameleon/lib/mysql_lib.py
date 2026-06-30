@@ -220,7 +220,7 @@ class mysql_source(object):
         try:
             cursor.execute("SHOW SESSION STATUS WHERE Variable_name IN ('Compression','Compression_algorithm','Compression_level');")
             compression_status = cursor.fetchall()
-            self.logger.info("MySQL %s connection compression status: %s" % (connection_name, compression_status))
+            self.logger.debug("MySQL %s connection compression status: %s" % (connection_name, compression_status))
         except Exception as error:
             self.logger.debug("Could not read MySQL %s connection compression status: %s" % (connection_name, error))
 
@@ -1952,7 +1952,10 @@ class mysql_source(object):
                                 elif log_seq == table_dic["log_seq"] and log_pos >= table_dic["log_pos"]:
                                     write_ddl = True
                                 if write_ddl:
-                                    self.logger.info("CONSISTENT POINT FOR TABLE %s REACHED  - binlogfile %s, position %s" % (table_key_dic, binlogfile, log_position))
+                                    self.logger.info(
+                                        "AUDIT table_cutoff_reached table=%s event=%s:%s cutoff_seq=%s cutoff_pos=%s action=ddl"
+                                        % (table_key_dic, binlogfile, log_position, table_dic["log_seq"], table_dic["log_pos"])
+                                    )
                                     self.pg_engine.set_consistent_table(table_name, destination_schema)
                                     inc_tables = self.pg_engine.get_inconsistent_tables()
                             if write_ddl:
@@ -2004,12 +2007,19 @@ class mysql_source(object):
                                 table_consistent = True
                             elif log_seq == table_dic["log_seq"] and log_pos >= table_dic["log_pos"]:
                                 table_consistent = True
-                                self.logger.info("CONSISTENT POINT FOR TABLE %s REACHED  - binlogfile %s, position %s" % (table_key_dic, binlogfile, log_position))
                             if table_consistent:
+                                self.logger.info(
+                                    "AUDIT table_cutoff_reached table=%s event=%s:%s cutoff=%s:%s action=%s"
+                                    % (table_key_dic, binlogfile, log_position, table_dic["log_seq"], table_dic["log_pos"], skip_event[1])
+                                )
                                 add_row = True
                                 self.pg_engine.set_consistent_table(table_name, destination_schema)
                                 inc_tables = self.pg_engine.get_inconsistent_tables()
                             else:
+                                self.logger.info(
+                                    "AUDIT table_event_skipped_pre_cutoff table=%s event=%s:%s cutoff=%s:%s action=%s"
+                                    % (table_key_dic, binlogfile, log_position, table_dic["log_seq"], table_dic["log_pos"], skip_event[1])
+                                )
                                 add_row = False
                         column_map = table_type_map[schema_row][table_name]["column_type"]
                         table_charset = table_type_map[schema_row][table_name]["table_charset"]

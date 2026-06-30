@@ -106,7 +106,6 @@ class pgsql_source(object):
                 pgsql_cur = pgsql_conn.cursor(cursor_factory=RealDictCursor)
             else:
                 pgsql_cur = pgsql_conn.cursor()
-            self.logger.debug("Changing the autocommit flag to %s" % auto_commit)
             pgsql_conn.set_session(autocommit=auto_commit)
 
         elif not self.source_conn:
@@ -665,7 +664,6 @@ class pg_engine(object):
             :param autocommit: boolean flag which sets autocommit on or off.
 
         """
-        self.logger.debug("Changing the autocommit flag to %s" % auto_commit)
         self.pgsql_conn.set_session(autocommit=auto_commit)
 
 
@@ -685,7 +683,7 @@ class pg_engine(object):
             self.logger.error("Undefined database connection string. Exiting now.")
             sys.exit()
         elif self.pgsql_conn:
-            self.logger.debug("There is already a database connection active.")
+            pass
 
 
     def disconnect_db(self):
@@ -3337,6 +3335,50 @@ class pg_engine(object):
         self.disconnect_db()
         return [configuration_status, schema_mappings, table_status, replica_counters, table_replay_status]
 
+    def log_replay_start_audit(self):
+        """
+            The method logs the initial per-table replay state for audit/debugging.
+        """
+        self.connect_db()
+        self.set_source_id()
+        sql_audit = """
+            SELECT
+                tab.v_schema_name,
+                tab.v_table_name,
+                tab.b_replica_enabled,
+                CASE
+                    WHEN tab.t_binlog_name IS NOT NULL
+                    THEN format('%%s:%%s', tab.t_binlog_name, tab.i_binlog_position)
+                    ELSE ''
+                END AS cutoff_position,
+                COALESCE(stat.i_replayed, 0) AS replayed_rows,
+                CASE
+                    WHEN stat.t_binlog_name IS NOT NULL
+                    THEN format('%%s:%%s', stat.t_binlog_name, stat.i_binlog_position)
+                    ELSE ''
+                END AS last_replayed_position
+            FROM
+                sch_chameleon.t_replica_tables tab
+                LEFT JOIN sch_chameleon.t_replica_table_status stat
+                    ON stat.i_id_source=tab.i_id_source
+                    AND stat.v_schema_name=tab.v_schema_name
+                    AND stat.v_table_name=tab.v_table_name
+            WHERE
+                tab.i_id_source=%s
+            ORDER BY
+                tab.v_schema_name,
+                tab.v_table_name
+            ;
+        """
+        self.pgsql_cur.execute(sql_audit, (self.i_id_source, ))
+        table_states = self.pgsql_cur.fetchall()
+        self.logger.info("AUDIT replay_start source=%s tables=%s" % (self.source, len(table_states)))
+        for table_state in table_states:
+            self.logger.info(
+                "AUDIT replay_start_table table=%s.%s enabled=%s cutoff=%s replayed_rows=%s last_replayed=%s"
+                % (table_state[0], table_state[1], table_state[2], table_state[3], table_state[4], table_state[5])
+            )
+
     def ensure_table_status_catalog(self):
         """
             The method creates the per-table replay status catalogue if missing.
@@ -3498,6 +3540,46 @@ class pg_engine(object):
 
             :param group_insert: the event data built in mysql_engine
         """
+        if group_insert:
+            first_global = group_insert[0]["global_data"]
+            last_global = group_insert[-1]["global_data"]
+            table_counts = {}
+            table_pk_samples = {}
+            for row_data in group_insert:
+                global_data = row_data["global_data"]
+                event_after = row_data["event_after"]
+                event_before = row_data["event_before"]
+                table_key = "%s.%s" % (global_data["schema"], global_data["table"])
+                table_counts[table_key] = table_counts.get(table_key, 0) + 1
+                if table_key not in table_pk_samples:
+                    sample_pk = event_after.get("id") or event_before.get("id")
+                    if sample_pk is not None:
+                        table_pk_samples[table_key] = sample_pk
+            table_summary = ", ".join(
+                [
+                    "%s=%s%s" % (
+                        table_name,
+                        table_counts[table_name],
+                        " sample_id=%s" % table_pk_samples[table_name] if table_name in table_pk_samples else ""
+                    )
+                    for table_name in sorted(table_counts)
+                ][:20]
+            )
+            if len(table_counts) > 20:
+                table_summary = "%s, ... +%s table(s)" % (table_summary, len(table_counts) - 20)
+            self.logger.info(
+                "AUDIT read_batch_events batch=%s log_table=%s events=%s from=%s:%s to=%s:%s tables=[%s]"
+                % (
+                    first_global["batch_id"],
+                    first_global["log_table"],
+                    len(group_insert),
+                    first_global["binlog"],
+                    first_global["logpos"],
+                    last_global["binlog"],
+                    last_global["logpos"],
+                    table_summary
+                )
+            )
         csv_file=io.StringIO()
         self.set_application_name("writing batch")
         insert_list=[]
@@ -3547,6 +3629,10 @@ class pg_engine(object):
                 ;
             """).format(sql.Identifier(log_table))
             self.pgsql_cur.copy_expert(sql_copy,csv_file)
+            self.logger.info(
+                "AUDIT read_batch_written batch=%s log_table=%s events=%s"
+                % (group_insert[0]["global_data"]["batch_id"], group_insert[0]["global_data"]["log_table"], len(group_insert))
+            )
         except psycopg2.Error as e:
             self.logger.error("SQLCODE: %s SQLERROR: %s" % (e.pgcode, e.pgerror))
             self.logger.error("fallback to inserts")
@@ -4335,11 +4421,10 @@ class pg_engine(object):
             self.pgsql_cur.execute(sql_last_update, (event_time, self.i_id_source, ))
             results = self.pgsql_cur.fetchone()
             db_event_time = results[0]
-            self.logger.info("Saved master data for source: %s" %(self.source, ) )
-            self.logger.debug("Binlog file: %s" % (binlog_name, ))
-            self.logger.debug("Binlog position:%s" % (binlog_position, ))
-            self.logger.debug("Last event: %s" % (db_event_time, ))
-            self.logger.debug("Next log table name: %s" % ( log_table, ))
+            self.logger.info(
+                "AUDIT read_batch_opened source=%s batch=%s log_table=%s start=%s:%s last_event=%s"
+                % (self.source, next_batch_id, log_table, binlog_name, binlog_position, db_event_time)
+            )
 
         except psycopg2.Error as e:
                     self.logger.error("SQLCODE: %s SQLERROR: %s" % (e.pgcode, e.pgerror))
@@ -5116,6 +5201,7 @@ class pg_engine(object):
             ;
         """
         self.pgsql_cur.execute(sql_update, (id_batch, ))
+        self.logger.info("AUDIT read_batch_processed batch=%s queued=%s" % (id_batch, collected_events))
         if collected_events == 0:
             self.logger.debug("batch %s has no events, marking it as replayed" % (id_batch, ))
             sql_mark_empty_replayed = """

@@ -35,6 +35,7 @@ source_help = """Specifies the source within a configuration. If omitted all sou
 tables_help = """Specifies the tables within a source . If omitted all tables are affected by the command."""
 logid_help = """Specifies the log id entry for displaying the error details"""
 debug_help = """Forces the debug mode with logging on stdout and log level debug."""
+foreground_help = """Runs daemonised commands in the foreground with logging on stdout, without forcing debug log level."""
 version_help = """Displays pg_chameleon's installed  version."""
 rollbar_help = """Overrides the level for messages to be sent to rolllbar. One of: "critical", "error", "warning", "info". The Default is "info" """
 full_help = """When specified with run_maintenance the switch performs a vacuum full instead of a normal vacuum. """
@@ -53,6 +54,7 @@ parser.add_argument('--source', type=str,  default='*',  required=False, help=so
 parser.add_argument('--tables', type=str,  default='*',  required=False, help=tables_help)
 parser.add_argument('--logid', type=str,  default='*',  required=False, help=logid_help)
 parser.add_argument('--debug', default=False, required=False, help=debug_help, action='store_true')
+parser.add_argument('--foreground', default=False, required=False, help=foreground_help, action='store_true')
 parser.add_argument('--version', action='version', help=version_help,version='{version}'.format(version=__version__))
 parser.add_argument('--rollbar-level', type=str, default="info", required=False, help=rollbar_help)
 parser.add_argument('--full', default=False, required=False, help=full_help, action='store_true')
